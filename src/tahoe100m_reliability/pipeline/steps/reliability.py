@@ -541,7 +541,6 @@ class ReliabilityStep(PipelineStep):
                                     skipped_conditions[condition] = 'not enough data'
                                 else:
                                     all_compute_results['split_half'].extend(compute_results['split_half'])
-                                    all_compute_results['edist'].extend(compute_results['edist'])
 
                                     # keep systema summary
                                     systema_results.append({
@@ -591,6 +590,32 @@ class ReliabilityStep(PipelineStep):
                 finally:
                     shared_ctrl['shm'].close()
                     shared_ctrl['shm'].unlink()
+
+        # summarize reliability results
+        summarize_split_half_results(
+            cluster=cluster,
+            all_rows=all_compute_results['split_half'],
+            expr_k=expr_k,
+            output_dir=output_dir,
+        )
+
+        # write out dropped genes
+        cur_time = time.strftime('%Y%m%d-%H%M%S')
+        with (output_dir / f'dropped_genes_histogram_cluster_{cluster}_{cur_time}.json').open('w') as fh:
+            json.dump(all_dropped_genes, fh, indent=4)
+
+        del all_dropped_genes
+
+        # write out skipped conditions
+        if skipped_conditions:
+            with (output_dir / f"skipped_conditions_cluster_{cluster}_{cur_time}.json").open("w") as fh:
+                json.dump({"skipped_conditions": skipped_conditions}, fh, indent=4)
+
+        elapsed_total = time.time() - t_start
+        log.info(f"  Total time: {elapsed_total / 60:.1f} min")
+
+        log.info(f"Finished processing cluster {cluster} with {len(treatments)} treatments")
+        log_memory_usage()
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
