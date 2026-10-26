@@ -11,3 +11,9 @@ uv venv
 source .venv/bin/activate
 uv sync
 ```
+
+To run, run
+
+```bash
+uv run tahoe100m-reliability
+```
