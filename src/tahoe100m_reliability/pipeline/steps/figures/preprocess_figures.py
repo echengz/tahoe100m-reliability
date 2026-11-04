@@ -1,9 +1,12 @@
 """
 Helps with generating preprocess figures.
 """
-import pandas as pd
+import logging
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
+from collections import defaultdict
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
@@ -12,6 +15,9 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, fcluster
 
 from tahoe100m_reliability.lib.treatment_set import TreatmentSet
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 class PreprocessFigures:
@@ -79,7 +85,7 @@ class PreprocessFigures:
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'parquet_per_drug_dosage.png')
 
-    def __generate_unique_perturbations_per_shard() -> None:
+    def __generate_unique_perturbations_per_shard(self) -> None:
         """2. For each parquet shard, how many unique drug x dosage
         (perturbation)s are in it
         """
@@ -186,7 +192,9 @@ class PreprocessFigures:
         )
 
         df['cluster'] = labels
-        df[['drug', 'dosage', 'cluster']].to_csv('./indexed_treatments/clustered_treatments.csv', index=False)
+        df[['drug', 'dosage', 'cluster']].to_csv(
+            self.__output_dir / 'clustered_treatments.csv', index=False
+        )
 
         clusters = (
             df.groupby('cluster').agg(
@@ -246,7 +254,7 @@ class PreprocessFigures:
         ax.set_xlabel("Parquet shard")
         ax.set_ylabel("Drug x dosage (perturbation)")
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'drug_dosage_distribution_clustered.png')
+        plt.savefig(self.__output_dir / 'drug_dosage_distribution_clustered.png')
 
         # color heatmap by dosage
         # Map dosage -> integer
@@ -338,7 +346,7 @@ class PreprocessFigures:
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_distribution.png')
 
-    def generate_figures() -> None:
+    def generate_figures(self) -> None:
         """
         Generates figures to evaluate the distribution of treatments
         across parquet shards; will be useful for knowing how to iterate

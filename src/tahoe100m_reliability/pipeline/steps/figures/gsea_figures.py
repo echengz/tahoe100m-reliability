@@ -1,7 +1,8 @@
 """
-Helps with generating GSEA figures
+Help generate GSEA figures
 """
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -561,18 +562,15 @@ def plot_nes_heatmap(
     plt.close(fig)
 
 
-def plot_gsea(df: pd.DataFrame, output_dir: Path):
+def plot_gsea(
+    df: pd.DataFrame, output_dir: Path, organ_by_cell_line: dict[str, Any], title_postfix: str
+) -> None:
     """Plot GSEA results.
 
     Assumes as input the DF generated from the GSEA step, saved as
     `shared_axis_hallmark_gsea.csv`
     """
-
-    # map cell line to organ
-    metadata = get_cell_line_metadata(to_pandas=True)
-    metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-    metadata["organ"] = metadata["Organ"].astype(str).str.strip()
-    organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # prepare matrices
     matrices = prepare_matrices(df, organ_by_cell_line)
@@ -612,7 +610,7 @@ def plot_gsea(df: pd.DataFrame, output_dir: Path):
         plot_nes_heatmap(
             nes=nes,
             fdr=fdr,
-            title=f"Shared-axis Hallmark GSEA - {mode.upper()}",
+            title=f"Shared-axis Hallmark GSEA ({mode.upper()}) - {title_postfix}",
             output_path=png_path,
             vmax=vmax,
             organ_by_cell_line=organ_by_cell_line,

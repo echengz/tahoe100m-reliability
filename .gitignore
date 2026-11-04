@@ -12,3 +12,5 @@ wheels/
 # MacOS files
 .DS_Store
 
+# test folders
+*test/

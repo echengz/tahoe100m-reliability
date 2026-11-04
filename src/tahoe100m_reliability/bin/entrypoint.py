@@ -10,6 +10,7 @@ from tahoe100m_reliability.pipeline import (
     RegressionPipelineRunner,
 )
 from tahoe100m_reliability.pipeline.steps import (
+    FiguresStep,
     GseaStep,
     PreprocessStep,
     ReliabilityStep,
@@ -65,11 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     SystematicStep.add_cli_args(systematic_parser)
 
     # GSEA STEP
-    systematic_parser = subparsers.add_parser(
+    gsea_parser = subparsers.add_parser(
         'gsea',
         help='Runs the GSEA step of the pipeline'
     )
-    GseaStep.add_cli_args(systematic_parser)
+    GseaStep.add_cli_args(gsea_parser)
+
+    # FIGURES STEP
+    figures_parser = subparsers.add_parser(
+        'figures',
+        help='Runs the figures step of the pipeline'
+    )
+    FiguresStep.add_cli_args(figures_parser)
 
     return parser
 
@@ -85,7 +93,8 @@ def main() -> None:
         'preprocess': PreprocessStep,
         'reliability': ReliabilityStep,
         'systematic': SystematicStep,
-        'gsea': GseaStep
+        'gsea': GseaStep,
+        'figures': FiguresStep,
     }
 
     runner = runner_map.get(args.command)
