@@ -3,13 +3,18 @@ Runs the systematic step of the pipeline
 """
 import argparse
 import logging
+import numpy as np
+import pandas as pd
 import time
 
 from pathlib import Path
+from tqdm import tqdm
 
 from tahoe100m_reliability.lib.tahoe100m_dataset import get_gene_metadata
 
 from .step_helpers.intermediate_loaders import (
+    get_combined_split_half_reliability_df,
+    load_gene_ids,
     load_reliable_perts_cellular,
     load_systema_deltas,
     RELIABILITY_THRESH,
@@ -102,67 +107,79 @@ def score_perturbation(
     is_rel,
     gene_ids,
 ):
-    """"Score a perturbation and calculate gene influence."""
     condition = str(condition)
     n_stim = int(n_stim)
 
     if n_stim < 4:
         return None, None, None
 
-    # condition format: cell_line_id|drug|dosage
     parts = condition.split("|")
 
     if ds_name == 'tahoe100m':
         if len(parts) != 3:
-            raise ValueError(
-                f"Unexpected condition format: {condition}"
-            )
-
+            raise ValueError(f"Unexpected condition format: {condition}")
         context, drug, dosage = parts
         perturbation = f'{drug}|{dosage}'
     else:
         context, perturbation = parts
 
-    delta_p = delta_p.astype(np.float64)
+    delta_p = np.asarray(delta_p, dtype=np.float64)
+    delta_avg = np.asarray(delta_avg, dtype=np.float64)
 
-    cos_sim, norm_delta_p, norm_delta_specific, frac_systematic = \
-        calculate_frac_systematic(delta_p, delta_avg, norm_delta_avg, is_rel)
+    # Calculate shared quantities
+    dot_pa = np.dot(delta_p, delta_avg)
+    norm_p_sq = np.dot(delta_p, delta_p)
+    norm_a_sq = norm_delta_avg ** 2
 
-    # Calculate each gene's influence to this result
-    gene_results = {}
-    influence_summary = None
-    valid = None
-    influences = None
+    norm_delta_p = np.sqrt(norm_p_sq)
 
-    if np.isfinite(frac_systematic) and is_rel:
-        # Original vector quantities
-        dot_pa = np.dot(delta_p, delta_avg)
-        norm_p_sq = np.dot(delta_p, delta_p)
-        norm_a_sq = np.dot(delta_avg, delta_avg)
+    if is_rel and norm_a_sq > 1e-24 and norm_delta_p > 1e-12:
+        cos_sim = dot_pa / (norm_delta_p * norm_delta_avg) \
+            if norm_delta_p > 1e-12 else np.nan
 
-        # Leave-one-gene-out quantities, calculated elementwise
-        dot_without_g = dot_pa - delta_p * delta_avg
-        norm_p_sq_without_g = norm_p_sq - delta_p**2
-        norm_a_sq_without_g = norm_a_sq - delta_avg**2
+        frac_systematic = cos_sim ** 2
 
-        # Avoid tiny negative values from floating-point rounding
-        norm_p_sq_without_g = np.maximum(norm_p_sq_without_g, 0.0)
-        norm_a_sq_without_g = np.maximum(norm_a_sq_without_g, 0.0)
+        norm_delta_specific = np.sqrt(max(
+            norm_p_sq - dot_pa**2 / norm_a_sq,
+            0.0
+        ))
 
-        denom = norm_p_sq_without_g * norm_a_sq_without_g
+        # Leave-one-gene-out calculations
+        dot_without = np.empty_like(delta_p)
+        np.multiply(delta_p, delta_avg, out=dot_without)
+        np.subtract(dot_pa, dot_without, out=dot_without)
 
-        frac_without_g = np.full(len(gene_ids), np.nan)
-        valid = (
-            (norm_p_sq_without_g > 1e-24)
-            & (norm_a_sq_without_g > 1e-24)
+        p_without = np.empty_like(delta_p)
+        np.square(delta_p, out=p_without)
+        np.subtract(norm_p_sq, p_without, out=p_without)
+
+        a_without = np.empty_like(delta_avg)
+        np.square(delta_avg, out=a_without)
+        np.subtract(norm_a_sq, a_without, out=a_without)
+
+        np.maximum(p_without, 0.0, out=p_without)
+        np.maximum(a_without, 0.0, out=a_without)
+
+        valid = (p_without > 1e-24) & (a_without > 1e-24)
+        np.multiply(p_without, a_without, out=p_without)
+
+        np.square(dot_without, out=dot_without)
+        np.divide(
+            dot_without,
+            p_without,
+            out=dot_without,
+            where=valid,
         )
 
-        frac_without_g[valid] = (
-            dot_without_g[valid] ** 2 / denom[valid]
-        )
+        influences = np.full(len(gene_ids), np.nan)
+        influences[valid] = frac_systematic - dot_without[valid]
 
-        # Influence of removing each gene
-        influences = frac_systematic - frac_without_g
+    else:
+        cos_sim = np.nan
+        norm_delta_specific = np.nan
+        frac_systematic = np.nan
+        valid = None
+        influences = None
 
     row = {
         "condition": condition,
@@ -180,6 +197,133 @@ def score_perturbation(
     return row, influences, valid
 
 
+def initialize_gene_accumulator(gene_ids):
+    n = len(gene_ids)
+
+    return {
+        'gene_ids': gene_ids,
+        'positive_influence': np.zeros(n),
+        'negative_influence': np.zeros(n),
+        'total_influence': np.zeros(n),
+        'total_influence_abs': np.zeros(n),
+        'num_instances': np.zeros(n, dtype=np.int64),
+        'categorical_change_towards_shared': np.zeros(n, dtype=np.int64),
+        'categorical_change_towards_specific': np.zeros(n, dtype=np.int64),
+        'categorical_change_neutral': np.zeros(n, dtype=np.int64),
+        'delta_p_magnitude_total': np.zeros(n),
+        'delta_p_magnitude_total_abs': np.zeros(n),
+        'delta_p_magnitude_total_pos': np.zeros(n),
+        'delta_p_magnitude_total_neg': np.zeros(n),
+        'num_upregulated': np.zeros(n, dtype=np.int64),
+        'num_downregulated': np.zeros(n, dtype=np.int64),
+
+        # Track cell lines separately
+        'cell_line_genes': {},
+    }
+
+
+def finalize_gene_accumulator(acc):
+    gene_ids = acc['gene_ids']
+
+    # Build gene -> cell lines mapping
+    cell_lines_by_gene = {}
+
+    for cell_line, genes in acc['cell_line_genes'].items():
+        for gene in genes:
+            cell_lines_by_gene.setdefault(gene, set()).add(cell_line)
+
+    fields = [
+        'negative_influence',
+        'positive_influence',
+        'total_influence',
+        'total_influence_abs',
+        'num_instances',
+        'categorical_change_towards_shared',
+        'categorical_change_towards_specific',
+        'categorical_change_neutral',
+        'delta_p_magnitude_total',
+        'delta_p_magnitude_total_abs',
+        'delta_p_magnitude_total_pos',
+        'delta_p_magnitude_total_neg',
+        'num_upregulated',
+        'num_downregulated',
+    ]
+
+    result = {}
+
+    for i in np.flatnonzero(acc['num_instances']):
+        gene = gene_ids[i].item()
+
+        result[gene] = {
+            field: acc[field][i].item()
+            for field in fields
+        }
+
+        result[gene]['cell_lines'] = cell_lines_by_gene.get(
+            gene, set()
+        )
+
+    return result
+
+def summarize_gene_influence_scores(
+    cell_line_id,
+    acc,
+    gene_ids,
+    delta_p,
+    influences,
+    valid,
+    frac_systematic,
+):
+    idx = np.flatnonzero(valid & np.isfinite(influences))
+
+    if len(idx) == 0:
+        return
+
+    inf = influences[idx]
+    dp = delta_p[idx]
+
+    # These indices correspond directly to positions in acc
+    # Assumes gene_ids has the same ordering in every call.
+    assert np.array_equal(gene_ids, acc['gene_ids'])
+
+    shared = (
+        (frac_systematic < SPECIFICITY_THRESH)
+        & (frac_systematic - inf >= SPECIFICITY_THRESH)
+    )
+
+    specific = (
+        (frac_systematic >= SPECIFICITY_THRESH)
+        & (frac_systematic - inf < SPECIFICITY_THRESH)
+    )
+
+    neutral = ~(shared | specific)
+
+    # Vectorized accumulation
+    acc['positive_influence'][idx] += np.maximum(inf, 0)
+    acc['negative_influence'][idx] += np.minimum(inf, 0)
+    acc['total_influence'][idx] += inf
+    acc['total_influence_abs'][idx] += np.abs(inf)
+    acc['num_instances'][idx] += 1
+
+    acc['delta_p_magnitude_total'][idx] += dp
+    acc['delta_p_magnitude_total_abs'][idx] += np.abs(dp)
+    acc['delta_p_magnitude_total_pos'][idx] += np.maximum(dp, 0)
+    acc['delta_p_magnitude_total_neg'][idx] += np.minimum(dp, 0)
+
+    acc['num_upregulated'][idx] += (dp >= 0)
+    acc['num_downregulated'][idx] += (dp < 0)
+
+    acc['categorical_change_towards_shared'][idx] += shared
+    acc['categorical_change_towards_specific'][idx] += specific
+    acc['categorical_change_neutral'][idx] += neutral
+
+    # One set update per perturbation, rather than one per gene
+    cell_line_genes = acc['cell_line_genes'].setdefault(
+        cell_line_id, set()
+    )
+    cell_line_genes.update(gene_ids[idx])
+
+
 class SystematicStep(PipelineStep):
 
     def __init__(self, args: argparse.Namespace, regression: bool = False) -> None:
@@ -193,72 +337,14 @@ class SystematicStep(PipelineStep):
         self.__reliability_dir = args.reliability_dir
         self.__systema_dir = args.systema_dir
         self.__systema_cp10k_dir = args.systema_cp10k_dir
+        self.__ctrl_gene_expressions_dir = args.ctrl_gene_expressions_dir
 
         self.__output_dir = args.output_dir
         self.__clusters = set([int(x.strip()) for x in args.clusters.split(',')]) if args.clusters else None
 
-    def __summarize_gene_influence_scores(
-        cell_line_id,
-        all_influence_rows,
-        gene_ids,
-        delta_p,
-        influences,
-        valid,
-    ) -> None:
-        """Summmarize gene influence scores."""
-        valid_idx = np.flatnonzero(valid & np.isfinite(influences))
+        self.__gene_metadata = get_gene_metadata(to_pandas=True)
 
-        for i in valid_idx:
-            gene_id = gene_ids[i].item()
-            influence = float(influences[i])
-            delta_p_magnitude = float(delta_p[i])
-
-            if gene_id not in all_influence_rows:
-                all_influence_rows[gene_id] = {
-                    'negative_influence': 0.0,
-                    'positive_influence': 0.0,
-                    'total_influence': 0.0,
-                    'total_influence_abs': 0.0,
-                    'num_instances': 0,
-                    'cell_lines': set(),
-                    'categorical_change_towards_shared': 0,
-                    'categorical_change_towards_specific': 0,
-                    'categorical_change_neutral': 0,
-                    'delta_p_magnitude_total': 0.0,
-                    'delta_p_magnitude_total_abs': 0.0,
-                    'delta_p_magnitude_total_pos': 0.0,
-                    'delta_p_magnitude_total_neg': 0.0,
-                    'num_upregulated': 0,
-                    'num_downregulated': 0,
-                }
-
-            s = all_influence_rows[gene_id]
-            s['positive_influence'] += max(influence, 0)
-            s['negative_influence'] += min(influence, 0)
-            s['total_influence'] += influence
-            s['total_influence_abs'] += abs(influence)
-            s['num_instances'] += 1
-            s['cell_lines'].add(cell_line_id)
-
-            s['delta_p_magnitude_total'] += delta_p_magnitude
-            s['delta_p_magnitude_total_abs'] += abs(delta_p_magnitude)
-
-            if delta_p_magnitude >= 0:
-                s['delta_p_magnitude_total_pos'] += delta_p_magnitude
-                s['num_upregulated'] += 1
-            else:
-                s['delta_p_magnitude_total_neg'] += delta_p_magnitude
-                s['num_downregulated'] += 1
-
-            frac_without_g = row['frac_systematic_var'] - influence
-            if row['frac_systematic_var'] < SPECIFICITY_THRESH and frac_without_g >= SPECIFICITY_THRESH:
-                s['categorical_change_towards_shared'] += 1
-            elif row['frac_systematic_var'] >= SPECIFICITY_THRESH and frac_without_g < SPECIFICITY_THRESH:
-                s['categorical_change_towards_specific'] += 1
-            else:
-                s['categorical_change_neutral'] += 1
-
-    def compute_systema_metrics(self, ds_name: str, systema_dir: Path) -> pd.DataFrame:
+    def compute_systema_metrics(self, ds_name: str, mode: str, systema_dir: Path) -> pd.DataFrame:
         """
         Compute Systema's systematic variation metric for all (context, perturbation)
         conditions in a cellular context dataset.
@@ -294,14 +380,17 @@ class SystematicStep(PipelineStep):
         )
 
         # ---- Compute Systema per cell line ----
-        log.info("  [2/3] Computing cosine similarities per cell line...")
-
+        log.info("  [2/3] Computing cosine similarities and influence scores per cell line...")
         all_rows = []
-        all_influence_rows = []
+        all_influence_rows = {}
         total_conditions = 0
         total_skipped = 0
 
-        for cell_line_id, data in systema_data.items():
+        for cell_line_id, data in tqdm(
+            systema_data.items(),
+            desc='Processing cell lines',
+            unit='cell_line'
+        ):
             conditions = data["conditions"]
             n_stim_cells = data["n_stim_cells"]
             delta_p_all = data["delta_p"]
@@ -314,6 +403,10 @@ class SystematicStep(PipelineStep):
                     f"no perturbations, skipping"
                 )
                 continue
+
+            # gene accumulator for influence scores
+            gene_ids = load_gene_ids(self.__ctrl_gene_expressions_dir, cell_line_id)
+            acc = initialize_gene_accumulator(gene_ids)
 
             # Group conditions by context.
             if ds_name == 'tahoe100m':
@@ -361,42 +454,44 @@ class SystematicStep(PipelineStep):
 
                     norm_delta_avg = float(np.linalg.norm(delta_avg))
 
-                # ---- Step 3: score each perturbation ----
-                for condition, n_stim, delta_p, is_rel in zip(
-                    context_conditions,
-                    context_weights,
-                    context_deltas,
-                    reliable_mask,
-                ):
-
-                    # General score
-                    row, influences, valid = score_perturbation(
-                        ds_name,
-                        condition,
-                        n_perts,
-                        n_stim,
-                        delta_p,
-                        delta_avg,
-                        norm_delta_avg,
-                        is_rel,
-                        gene_ids,
-                    )
-                    if row is None:
-                        total_skipped += 1
-                        continue
-
-                    total_conditions += 1
-                    all_rows.append(row)
-
-                    if influences is not None and valid is not None:
-                        self.__summarize_gene_influence_scores(
-                            cell_line_id,
-                            all_influence_rows,
-                            gene_ids,
+                    # ---- Step 3: score each perturbation ----
+                    for condition, n_stim, delta_p, is_rel in zip(
+                        context_conditions,
+                        context_weights,
+                        context_deltas,
+                        reliable_mask,
+                    ):
+                        row, influences, valid = score_perturbation(
+                            ds_name,
+                            condition,
+                            n_perts,
+                            n_stim,
                             delta_p,
-                            influences,
-                            valid
+                            delta_avg,
+                            norm_delta_avg,
+                            is_rel,
+                            gene_ids,
                         )
+
+                        if row is None:
+                            total_skipped += 1
+                            continue
+
+                        total_conditions += 1
+                        all_rows.append(row)
+
+                        if influences is not None and valid is not None:
+                            summarize_gene_influence_scores(
+                                cell_line_id,
+                                acc,
+                                gene_ids,
+                                delta_p,
+                                influences,
+                                valid,
+                                row['frac_systematic_var'],
+                            )
+
+            all_influence_rows = finalize_gene_accumulator(acc)
 
         influence_summary = []
         for gene_id, influence in all_influence_rows.items():
@@ -426,7 +521,7 @@ class SystematicStep(PipelineStep):
         influence_df = pd.DataFrame(influence_summary)
         # map to gene_metadata
         influence_df = influence_df.merge(
-            get_gene_metadata(to_pandas=True)[['token_id', 'gene_symbol', 'ensembl_id']],
+            self.__gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
             on='token_id',
             how='left',
             validate='many_to_one',
@@ -444,7 +539,7 @@ class SystematicStep(PipelineStep):
         gene_influences_dir.mkdir(parents=True, exist_ok=True)
 
         influence_df.to_csv(
-            gene_influences_dir / 'summary_top1000_influential_genes.csv',
+            gene_influences_dir / f'{mode}_summary_top1000_influential_genes.csv',
             index=False
         )
         del influence_summary
@@ -482,6 +577,7 @@ class SystematicStep(PipelineStep):
         return df
 
     def merge_with_reliability(
+        self,
         ds_name: str,
         systema_df: pd.DataFrame,
     ) -> pd.DataFrame:
@@ -564,12 +660,24 @@ class SystematicStep(PipelineStep):
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         """Add CLI args for the systematic step to the given parser."""
         parser.add_argument(
+            '-c', '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir', type=Path, required=True,
+            help='Path to the directory containing the control gene matrix for all 50 '
+                + 'cell lines, each an individual parquet file.'
+        )
+
+        parser.add_argument(
             '-r', '--reliability-dir', dest='reliability_dir', type=Path, required=True,
             help="Path to the reliability results to serve as input data. Should "
                  + "contain both reliability_summary_tahoe100m_cluster_*.csv files "
                  + "and a systema/ subdirectory containing delta_p values for each "
                  + "cell line across all clusters.",
         )
+
+        parser.add_argument(
+            '-o', '--output-dir', dest='output_dir', required=True, type=Path,
+            help='Output directory to write results to'
+        )
+
         parser.add_argument(
             '--systema-dir', dest='systema_dir', type=Path,
             help='Path to systema delta_p scores (not normalized)'
@@ -577,11 +685,6 @@ class SystematicStep(PipelineStep):
         parser.add_argument(
             '--systema-cp10k-dir', dest='systema_cp10k_dir', type=Path,
             help='Path to systema cp10k delta_p scores (normalized)'
-        )
-
-        parser.add_argument(
-            '-o', '--output-dir', dest='output_dir', required=True, type=Path,
-            help='Output directory to write results to'
         )
 
         parser.add_argument(
@@ -617,7 +720,7 @@ class SystematicStep(PipelineStep):
                 all_summary_rows[mode] = []
 
                 for ds_name in self.__datasets:
-                    systema_df = self.compute_systema_metrics(ds_name, systema_dir)
+                    systema_df = self.compute_systema_metrics(ds_name, mode, systema_dir)
 
                     # Save Systema-only results
                     systema_path = self.__output_dir / f"{mode}_{ds_name}_{cur_time}.csv"
@@ -663,9 +766,9 @@ class SystematicStep(PipelineStep):
             summary_df = pd.DataFrame(summary_rows)
 
             if self.__regression:
-                summary_path = args.output_dir / f"{mode}_cc_summary_regression_{cur_time}.csv"
+                summary_path = self.__output_dir / f"{mode}_cc_summary_regression_{cur_time}.csv"
             else:
-                summary_path = args.output_dir / f"{mode}_cc_summary_tahoe100m_{cur_time}.csv"
+                summary_path = self.__output_dir / f"{mode}_cc_summary_tahoe100m_{cur_time}.csv"
 
             summary_df.to_csv(summary_path, index=False)
 
