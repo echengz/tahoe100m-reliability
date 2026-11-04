@@ -32,11 +32,11 @@ class PreprocessStep(PipelineStep):
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize the preprocess step."""
-        self.__treatment_sets_dir = args.treatment_sets_dir
-        self.__parquet_shard_start = args.parquet_shard_start
+        self.treatment_sets_dir = args.treatment_sets_dir
+        self.parquet_shard_start = args.parquet_shard_start
 
-        self.__generate_figures = args.generate_figures
-        self.__control_gene_expressions_dir  = args.control_gene_expressions_dir
+        self.generate_figures = args.generate_figures
+        self.control_gene_expressions_dir  = args.control_gene_expressions_dir
 
     def get_treatment_sets(self) -> list[TreatmentSet]:
         """Get all known drug x dosage (perturbation) permutations (treatment sets)."""
@@ -76,10 +76,10 @@ class PreprocessStep(PipelineStep):
         # list all parquet shards
         parquet_files = list_tahoe100m_parquet_files()
         log.info(f"Total parquet files in Tahoe100m: {len(parquet_files)}")
-        log.info(f"Starting at shard: {self.__parquet_shard_start}")
+        log.info(f"Starting at shard: {self.parquet_shard_start}")
 
-        if self.__parquet_shard_start > 0:
-            parquet_files = parquet_files[self.__parquet_shard_start:]
+        if self.parquet_shard_start > 0:
+            parquet_files = parquet_files[self.parquet_shard_start:]
 
         query = """
             SELECT DISTINCT sample, filename
@@ -100,8 +100,8 @@ class PreprocessStep(PipelineStep):
 
             # write indexed treatment sets to file - updating as we go
             with (
-                self.__treatment_sets_dir / 
-                f'indexed_treatment_sets_{self.__parquet_shard_start:05d}.json'
+                self.treatment_sets_dir / 
+                f'indexed_treatment_sets_{self.parquet_shard_start:05d}.json'
             ).open('w') as fh:
                 json.dump([
                     treatment.model_dump(mode='json')
@@ -156,7 +156,7 @@ class PreprocessStep(PipelineStep):
     def combine_indexed_treatment_sets(self) -> list[TreatmentSet]:
         """Combine parts of indexed treatment sets, if needed."""
         treatment_sets = {}
-        for file in self.__treatment_sets_dir.glob('indexed_treatment_sets_*.json'):
+        for file in self.treatment_sets_dir.glob('indexed_treatment_sets_*.json'):
             with open(file, 'r') as fh:
                 data = json.load(fh)
                 for x in data:
@@ -186,7 +186,7 @@ class PreprocessStep(PipelineStep):
                 for sample in treatment['samples']
             }
 
-        with (self.__treatment_sets_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
+        with (self.treatment_sets_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
             json.dump([
                 treatment.model_dump(mode='json')
                 for treatment in treatment_sets.values()
@@ -228,7 +228,7 @@ class PreprocessStep(PipelineStep):
 
             # add new cells to matrix
             for cell_line_id, cells in new_cells.items():
-                filepath = self.__control_gene_expressions_dir / f'{cell_line_id}_gene_expressions.parquet'
+                filepath = self.control_gene_expressions_dir / f'{cell_line_id}_gene_expressions.parquet'
 
                 matrix = pd.concat(cells, axis=1).T
 
@@ -294,7 +294,7 @@ class PreprocessStep(PipelineStep):
 
     def run(self) -> None:
         """Run the preprocess step."""
-        treatment_sets_file = self.__treatment_sets_dir / 'combined_indexed_treatment_sets.json'
+        treatment_sets_file = self.treatment_sets_dir / 'combined_indexed_treatment_sets.json'
 
         if not treatment_sets_file.is_file():
             # generate the treatment sets file
@@ -321,11 +321,11 @@ class PreprocessStep(PipelineStep):
         self.evaluate_treatment_sets(treatment_sets)
 
         # 4. Generate figures
-        if self.__generate_figures:
-            output_dir = self.__treatment_sets_dir / 'figures'
+        if self.generate_figures:
+            output_dir = self.treatment_sets_dir / 'figures'
             figures = PreprocessFigures(treatment_sets, output_dir)
             figures.generate_figures()
 
         # 5. Generate control gene expression matrices
-        if self.__control_gene_expressions_dir:
+        if self.control_gene_expressions_dir:
             self.build_control_gene_expressions(treatment_sets)

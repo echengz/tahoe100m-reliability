@@ -1,5 +1,5 @@
 """
-Runs the reliability step of the pipeline
+Runs step 1 of the pipeline: reliability.
 """
 import argparse
 import csv
@@ -330,6 +330,7 @@ class ReliabilityStep(PipelineStep):
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize reliability step."""
         self.args = args
+        self.args.output_dir.mkdir(parents=True, exist_ok=True)
 
     def __aggregate_stim_data(self, treatments: list[TreatmentSet], stim_dir: Path):
         """Localize and aggregate stim data from the HuggingFace repository."""
@@ -427,7 +428,7 @@ class ReliabilityStep(PipelineStep):
                 jobs.append((
                     condition,
                     cell_line_dirs,
-                    self.__args.seed + num_jobs_total
+                    self.args.seed + num_jobs_total
                 ))
                 num_jobs_total += 1
 
@@ -462,12 +463,12 @@ class ReliabilityStep(PipelineStep):
             stim_dir = Path(tmp_dir) if self.args.stim_data_dir is None else self.args.stim_data_dir  # can handle this better
 
             if not self.args.skip_localization:
-                self.__aggregate_stim_data(treatments, stim_dir)
+                self.aggregate_stim_data(treatments, stim_dir)
 
             log.info(f"Computing reliability for each cell line against controls for cluster {cluster}")
 
             # get cell line jobs
-            cell_line_jobs, num_jobs_total = self.__set_up_cell_line_jobs(target_cell_lines)
+            cell_line_jobs, num_jobs_total = self.set_up_cell_line_jobs(target_cell_lines)
 
             # systema intermediates
             if self.args.normalize_cp10k:
@@ -728,8 +729,7 @@ class ReliabilityStep(PipelineStep):
             for file in self.args.ctrl_gene_expressions_dir.glob('*.parquet'):
                 target_cell_lines.append(file.stem.replace('_gene_expressions', ''))
 
-        log.info(f"Targeting {len(self.__target_cell_lines)} cell lines")
-        self.args.output_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"Targeting {len(target_cell_lines)} cell lines")
 
         # Build gene expression matrices for all cell lines in this treatment
         for cluster, treatments in clustered_treatments.items():

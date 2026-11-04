@@ -1,5 +1,5 @@
 """
-Runs the systematic step of the pipeline
+Runs step 2 of the pipeline: systematic.
 """
 import argparse
 import logging
@@ -10,17 +10,15 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import get_gene_metadata
-
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
     load_gene_ids,
-    load_reliable_perts_cellular,
+    load_reliable_conditions,
     load_systema_deltas,
     RELIABILITY_THRESH,
     SPECIFICITY_THRESH,
 )
-from .step_helpers.pipeline_step import PipelineStep
+from .step_helpers.pipeline_step import BaseSystematicStep
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -324,25 +322,18 @@ def summarize_gene_influence_scores(
     cell_line_genes.update(gene_ids[idx])
 
 
-class SystematicStep(PipelineStep):
+class SystematicStep(BaseSystematicStep):
 
     def __init__(self, args: argparse.Namespace, regression: bool = False) -> None:
-        """Initiailizer."""
+        """Initializer."""
+        super().__init__(args=args)
+
         if regression:
-            self.__datasets = list(CELLULAR_DATASETS.keys())
+            self.datasets = list(CELLULAR_DATASETS.keys())
         else:
-            self.__datasets = ['tahoe100m']
+            self.datasets = ['tahoe100m']
 
-        self.__regression = regression
-        self.__reliability_dir = args.reliability_dir
-        self.__systema_dir = args.systema_dir
-        self.__systema_cp10k_dir = args.systema_cp10k_dir
-        self.__ctrl_gene_expressions_dir = args.ctrl_gene_expressions_dir
-
-        self.__output_dir = args.output_dir
-        self.__clusters = set([int(x.strip()) for x in args.clusters.split(',')]) if args.clusters else None
-
-        self.__gene_metadata = get_gene_metadata(to_pandas=True)
+        self.regression = regression
 
     def compute_systema_metrics(self, ds_name: str, mode: str, systema_dir: Path) -> pd.DataFrame:
         """
@@ -366,17 +357,17 @@ class SystematicStep(PipelineStep):
 
         # ---- Load reliability (used to filter which perts define δ_avg) ----
         log.info("  [0/3] Loading reliability data for stim data...")
-        reliable_conds, all_conds = load_reliable_perts_cellular(
-            ds_name, self.__reliability_dir, self.__clusters
+        reliable_conds, all_conds = load_reliable_conditions(
+            ds_name, self.reliability_dir, self.clusters
         )
 
         # ---- Load precomputed delta values for each (reliable) cell line ----
         log.info("  [1/3] Loading precomputed delta_p values for reliable data...")
         systema_data = load_systema_deltas(
-            ds_name,
-            systema_dir,
-            all_conds,
-            self.__clusters
+            ds_name=ds_name,
+            systema_dir=systema_dir,
+            target_conds=all_conds,
+            clusters=self.clusters
         )
 
         # ---- Compute Systema per cell line ----
@@ -405,7 +396,7 @@ class SystematicStep(PipelineStep):
                 continue
 
             # gene accumulator for influence scores
-            gene_ids = load_gene_ids(self.__ctrl_gene_expressions_dir, cell_line_id)
+            gene_ids = load_gene_ids(self.ctrl_gene_expressions_dir, cell_line_id)
             acc = initialize_gene_accumulator(gene_ids)
 
             # Group conditions by context.
@@ -521,7 +512,7 @@ class SystematicStep(PipelineStep):
         influence_df = pd.DataFrame(influence_summary)
         # map to gene_metadata
         influence_df = influence_df.merge(
-            self.__gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
+            self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
             on='token_id',
             how='left',
             validate='many_to_one',
@@ -535,11 +526,8 @@ class SystematicStep(PipelineStep):
             .nlargest(1000, 'mean_abs_influence')
         )
 
-        gene_influences_dir = self.__output_dir / 'gene_influences'
-        gene_influences_dir.mkdir(parents=True, exist_ok=True)
-
         influence_df.to_csv(
-            gene_influences_dir / f'{mode}_summary_top1000_influential_genes.csv',
+            self.output_dir / f'systema_{mode}_summary_top1000_influential_genes.csv',
             index=False
         )
         del influence_summary
@@ -588,7 +576,7 @@ class SystematicStep(PipelineStep):
         Merges on the 'condition' column (format: "context|perturbation").
         """
         rel_df = get_combined_split_half_reliability_df(
-            self.__reliability_dir, self.__clusters, summary=True, ds_name=ds_name
+            self.reliability_dir, self.clusters, summary=True, ds_name=ds_name
         )
         log.info(f"  Loaded reliability: {len(rel_df)} conditions")
 
@@ -656,62 +644,18 @@ class SystematicStep(PipelineStep):
 
         return merged
 
-    @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for the systematic step to the given parser."""
-        parser.add_argument(
-            '-c', '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir', type=Path, required=True,
-            help='Path to the directory containing the control gene matrix for all 50 '
-                + 'cell lines, each an individual parquet file.'
-        )
-
-        parser.add_argument(
-            '-r', '--reliability-dir', dest='reliability_dir', type=Path, required=True,
-            help="Path to the reliability results to serve as input data. Should "
-                 + "contain both reliability_summary_tahoe100m_cluster_*.csv files "
-                 + "and a systema/ subdirectory containing delta_p values for each "
-                 + "cell line across all clusters.",
-        )
-
-        parser.add_argument(
-            '-o', '--output-dir', dest='output_dir', required=True, type=Path,
-            help='Output directory to write results to'
-        )
-
-        parser.add_argument(
-            '--systema-dir', dest='systema_dir', type=Path,
-            help='Path to systema delta_p scores (not normalized)'
-        )
-        parser.add_argument(
-            '--systema-cp10k-dir', dest='systema_cp10k_dir', type=Path,
-            help='Path to systema cp10k delta_p scores (normalized)'
-        )
-
-        parser.add_argument(
-            '--clusters', dest='clusters', required=False, type=str,
-            help='Comma-deliminated list of specific cluster(s) to compute the '
-                 + 'Systema systematic variation for; if not provided, defaults to '
-                 + 'whatever data is available.'
-        )
-
     def run(self) -> None:
         """Run the full pipeline."""
         log.info(f"Systema Systematic Variation + Reliability 2D (Cellular Context)")
-        log.info(f"  Clusters:\t{', '.join(self.__clusters) if self.__clusters else 'all'}")
-        log.info(f"  Reliability dir:\t{self.__reliability_dir}")
-        log.info(f"  Output:\t{self.__output_dir}")
+        log.info(f"  Clusters:\t{', '.join(self.clusters) if self.clusters else 'all'}")
+        log.info(f"  Reliability dir:\t{self.reliability_dir}")
+        log.info(f"  Output:\t{self.output_dir}")
 
-        self.__output_dir.mkdir(parents=True, exist_ok=True)
         cur_time = time.strftime('%Y%m%d-%H%M%S')
         all_summary_rows = {}
 
-        mode_mapping = {
-            'systema': self.__systema_dir,
-            'systema_cp10k': self.__systema_cp10k_dir
-        }
-
         try:
-            for mode, systema_dir in mode_mapping.items():
+            for mode, systema_dir in self.mode_mapping.items():
                 if not systema_dir or not systema_dir.is_dir():
                     log.warning(f"{mode} dir not found, skipping mode")
                     continue
@@ -719,18 +663,18 @@ class SystematicStep(PipelineStep):
                 log.info(f"Evaluating {mode}")
                 all_summary_rows[mode] = []
 
-                for ds_name in self.__datasets:
+                for ds_name in self.datasets:
                     systema_df = self.compute_systema_metrics(ds_name, mode, systema_dir)
 
                     # Save Systema-only results
-                    systema_path = self.__output_dir / f"{mode}_{ds_name}_{cur_time}.csv"
+                    systema_path = self.output_dir / f"systema_{mode}_{ds_name}_{cur_time}.csv"
                     systema_df.to_csv(systema_path, index=False)
                     log.info(f"\n  Saved: {systema_path}")
 
                     # ---- Merge with reliability ----
                     merged_df = self.merge_with_reliability(ds_name, systema_df)
 
-                    merged_path = self.__output_dir / f"{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
+                    merged_path = self.output_dir / f"systema_{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
                     merged_df.to_csv(merged_path, index=False)
                     log.info(f"  Saved: {merged_path}")
 
@@ -765,10 +709,10 @@ class SystematicStep(PipelineStep):
         for mode, summary_rows in all_summary_rows.items():
             summary_df = pd.DataFrame(summary_rows)
 
-            if self.__regression:
-                summary_path = self.__output_dir / f"{mode}_cc_summary_regression_{cur_time}.csv"
+            if self.regression:
+                summary_path = self.output_dir / f"systema_{mode}_cc_summary_regression_{cur_time}.csv"
             else:
-                summary_path = self.__output_dir / f"{mode}_cc_summary_tahoe100m_{cur_time}.csv"
+                summary_path = self.output_dir / f"systema_{mode}_cc_summary_tahoe100m_{cur_time}.csv"
 
             summary_df.to_csv(summary_path, index=False)
 
