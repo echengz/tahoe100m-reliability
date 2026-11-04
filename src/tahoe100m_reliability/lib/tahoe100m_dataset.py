@@ -29,12 +29,16 @@ def get_cell_line_metadata(to_pandas: bool = False) -> IterableDataset | pd.Data
     return __get_dataset('cell_line_metadata', to_pandas=to_pandas)
 
 
-def get_sample_metadata(to_pandas: bool = False) -> IterableDataset | pd.DataFrame:
-    return __get_dataset('sample_metadata', to_pandas=to_pandas)
+def get_drug_metadata(to_pandas: bool = False)  -> IterableDataset | pd.DataFrame:
+    return __get_dataset('drug_metadata', to_pandas=to_pandas)
 
 
 def get_gene_metadata(to_pandas: bool = False)  -> IterableDataset | pd.DataFrame:
     return __get_dataset('gene_metadata', to_pandas=to_pandas)
+
+
+def get_sample_metadata(to_pandas: bool = False) -> IterableDataset | pd.DataFrame:
+    return __get_dataset('sample_metadata', to_pandas=to_pandas)
 
 
 def list_tahoe100m_parquet_files() -> list[str]:

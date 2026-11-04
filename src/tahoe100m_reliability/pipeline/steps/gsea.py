@@ -11,6 +11,10 @@ import re
 
 from pathlib import Path
 
+from .figures.gsea_figures import (
+    plot_gsea,
+    FDR_THRESHOLD,
+)
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
     load_gene_ids,
@@ -83,6 +87,7 @@ class GseaStep(BaseSystematicStep):
         """Initializer."""
         super().__init__(args=args)
         self.ds_name = 'tahoe100m'
+        self.num_top_pathways = args.num_top_pathways
 
         self.gene_metadata["token_id"] = self.gene_metadata["token_id"].astype(np.int64)
         self.id_to_symbol = dict(
@@ -90,6 +95,17 @@ class GseaStep(BaseSystematicStep):
                 self.gene_metadata["gene_symbol"].astype(str)
             )
         )
+
+    @classmethod
+    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add CLI args for this base systematic step to the given parser."""
+        BaseSystematicStep.add_cli_args(parser=parser)
+
+        parser.add_argument(
+            '--num-top-pathways', dest='num_top_pathways', required=False, type=int, default=5,
+            help='Number of top positive/negative NES pathways to retain'
+        )
+
 
     def run(self) -> None:
         """Run the step."""
@@ -180,7 +196,55 @@ class GseaStep(BaseSystematicStep):
 
                 del deltas, weights, rel_deltas, shared
 
-        outfile = self.output_dir / "shared_axis_hallmark_gsea.csv"
-        results = pd.DataFrame(all_rows)
-        results.to_csv(outfile, index=False)
-        log.info(f"\nSaved {len(results)} GSEA rows to {outfile}")
+        # summarize GSEA results
+        df = pd.DataFrame(all_rows)
+        df['significant'] = df['FDR_qval'] < FDR_THRESHOLD
+        df.to_csv(self.output_dir / "shared_axis_hallmark_gsea.csv", index=False)
+
+        # plot
+        log.info("Plotting GSEA results...")
+        plot_gsea(df, self.output_dir)
+
+        # get the top positive and negative NES pathways
+        # for every cell line and mode
+        log.info("Summarizing GSEA results...")
+        summaries = []
+        for (mode, cell_line), group in df.groupby(["mode", "cell_line"]):
+            group = group.dropna(subset=["NES"])
+
+            positive = group[group["NES"] > 0].nlargest(self.num_top_pathways, "NES").copy()
+            positive["direction"] = "positive"
+
+            negative = group[group["NES"] < 0].nsmallest(self.num_top_pathways, "NES").copy()
+            negative["direction"] = "negative"
+
+            summaries.extend([positive, negative])
+
+        if summaries:
+            summary = pd.concat(summaries, ignore_index=True)
+            summary.sort_values(
+                ["mode", "cell_line", "direction", "FDR_qval"]
+            ).to_csv(self.output_dir / f"top_{self.num_top_pathways}_pathways.csv", index=False)
+
+        # Select pathways significant in at least one result.
+        significant_terms = sorted(
+            df.loc[df["significant"], "term"].dropna().unique()
+        )
+
+        # If none pass the threshold, show the 30 pathways with
+        # the smallest minimum FDR instead.
+        if not significant_terms:
+            significant_terms = (
+                df.groupby("term")["FDR_qval"]
+                .min()
+                .nsmallest(30)
+                .index.tolist()
+            )
+
+        # Save significant results
+        df[df["significant"]].sort_values(
+            ["mode", "cell_line", "FDR_qval"]
+        ).to_csv(self.output_dir / "significant_pathways.csv", index=False)
+
+        log.info(f"Total rows: {len(df)}")
+        log.info(f"Rows with FDR < {FDR_THRESHOLD}: {df['significant'].sum()}")
