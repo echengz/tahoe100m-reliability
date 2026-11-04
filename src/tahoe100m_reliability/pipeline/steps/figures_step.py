@@ -18,9 +18,10 @@ from tahoe100m_reliability.lib.tahoe100m_dataset import (
 )
 from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 
-from .figures.gsea_figures import plot_gsea
+from .figures.gsea_figures import plot_gsea_figures
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import plot_reliability_figures
+from .figures.systematic_figures import plot_systematic_figures
 from .step_helpers.pipeline_step import PipelineStep
 
 logging.basicConfig(level=logging.INFO)
@@ -34,8 +35,8 @@ class FiguresStep(PipelineStep):
         self.__output_dir = args.output_dir
 
         self.__preprocess_dir = args.preprocess_dir
-        self.__reliability_dir = args.reliability_dir
-        self.__reliability_normalized_dir = args.reliability_normalized_dir
+        self.__reliability_raw_dir = args.reliability_raw_dir
+        self.__reliability_cp10k_dir = args.reliability_cp10k_dir
         self.__systema_raw_dir = args.systema_raw_dir
         self.__systema_cp10k_dir = args.systema_cp10k_dir
         self.__gsea_dir = args.gsea_dir
@@ -58,11 +59,11 @@ class FiguresStep(PipelineStep):
             help="Path to the preprocess resuls; should contain combined_index_treatment_sets.json"
         )
         parser.add_argument(
-            '--reliability-normalized-dir', dest='reliability_normalized_dir', type=Path,
+            '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
             help="Path to the normalized (CP10K) reliability resuls"
         )
         parser.add_argument(
-            '--reliability-dir', dest='reliability_dir', type=Path,
+            '--reliability-raw-dir', dest='reliability_raw_dir', type=Path,
             help="Path to the reliability resuls"
         )
         parser.add_argument(
@@ -98,17 +99,29 @@ class FiguresStep(PipelineStep):
 
         # generate reliability figures
         rel_map = {
-            'raw': self.__reliability_dir,
-            'cp10k': self.__reliability_normalized_dir
+            'raw': self.__reliability_raw_dir,
+            'cp10k': self.__reliability_cp10k_dir
         }
 
         for mode, rel_dir in rel_map.items():
             if rel_dir:
-                log.info("Generating reliability figures...")
+                log.info(f"Generating {mode} reliability figures...")
                 reliability_output_dir = self.__output_dir / f'reliability_{mode}'
                 reliability_output_dir.mkdir(parents=True, exist_ok=True)
 
                 plot_reliability_figures(rel_dir, reliability_output_dir)
+
+        systema_map = {
+            'raw': self.__systema_raw_dir,
+            'cp10k': self.__systema_cp10k_dir
+        }
+        for mode, systema_dir in systema_map.items():
+            if systema_dir:
+                log.info(f"Generating {mode} systema figures...")
+                systema_output_dir = self.__output_dir / f'systema_{mode}'
+                systema_output_dir.mkdir(parents=True, exist_ok=True)
+
+                plot_systematic_figures(systema_dir, systema_output_dir, mode)
 
         # Generate GSEA figures
         if self.__gsea_dir:
@@ -126,12 +139,12 @@ class FiguresStep(PipelineStep):
 
                 if axis == 'global':
                     log.info("Plotting global axis")
-                    plot_gsea(df, gsea_output_dir / 'global', organ_by_cell_line, "global")
+                    plot_gsea_figures(df, gsea_output_dir / 'global', organ_by_cell_line, "global")
                 else:
                     for moa, moa_df in df.groupby("moa"):
                         # Make directory name filesystem-safe
                         safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa))
                         log.info(f"Plotting MOA axis: {moa}")
-                        plot_gsea(
+                        plot_gsea_figures(
                             moa_df, gsea_output_dir / "moa" / safe_moa, organ_by_cell_line, moa
                         )

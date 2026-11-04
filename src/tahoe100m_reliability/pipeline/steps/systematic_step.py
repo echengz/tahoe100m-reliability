@@ -10,6 +10,10 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 
+from tahoe100m_reliability.lib.tahoe100m_dataset import (
+    get_drug_metadata,
+)
+
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
     load_gene_ids,
@@ -17,6 +21,7 @@ from .step_helpers.intermediate_loaders import (
     load_systema_deltas,
     RELIABILITY_THRESH,
     SPECIFICITY_THRESH,
+    REL_COL_FALLBACKS,
 )
 from .step_helpers.pipeline_step import BaseSystematicStep
 
@@ -335,6 +340,197 @@ class SystematicStep(BaseSystematicStep):
 
         self.regression = regression
 
+    def summarize_tahoe100m_by_group(
+        self,
+        mode: str,
+        df: pd.DataFrame,
+        cur_time: str,
+    ) -> None:
+        """Summarize Tahoe-100m merged results by specific groupings."""
+        df = df.copy()
+
+        # Extract cell_line_id, drug, and dosage from condition.
+        parts = df["condition"].astype(str).str.split(
+            "|", regex=False, expand=True
+        )
+
+        if parts.shape[1] != 3:
+            raise ValueError(
+                "Expected 3 condition components "
+                f"(cell_line|drug|dosage), found {parts.shape[1]}"
+            )
+
+        df["cell_line_id"] = parts[0]
+        df["drug"] = parts[1]
+        df["dosage"] = parts[2]
+
+        # Select available reliability and ceiling columns
+        rel_col = next(
+            (c for c in REL_COL_FALLBACKS if c in df.columns),
+            None,
+        )
+
+        ceiling_col = next(
+            (
+                c for c in [
+                    "ceiling_from_median_all_genes",
+                    "ceiling_from_mean_all_genes",
+                ]
+                if c in df.columns
+            ),
+            None,
+        )
+
+        # Load drug mappings for MOA grouping
+        moa_mapping = self.load_drug_moa_mapping()
+
+        # Map each drug to its corresponding MOA
+        df["moa"] = (
+            df["drug"]
+            .astype(str)
+            .str.strip()
+            .map(moa_mapping)
+        )
+
+        # Define the groupings
+        groupings = {
+            "cell_line_id": ["cell_line_id"],
+            "drug": ["drug"],
+            "dosage": ["dosage"],
+            "drug_x_dosage": ["drug", "dosage"],
+            "moa": ['moa']
+        }
+
+        for grouping_name, group_cols in groupings.items():
+            agg = {
+                "condition": ["nunique"],
+                "cos_sim": ["count", "mean", "std", "median"],
+                "n_stim_cells": ["sum", "median"],
+            }
+
+            if rel_col:
+                agg[rel_col] = ["mean", "median"]
+
+            if ceiling_col:
+                agg[ceiling_col] = ["mean", "median"]
+
+            summary = (
+                df.groupby(group_cols, dropna=False)
+                .agg(agg)
+            )
+
+            # Flatten the MultiIndex columns.
+            summary.columns = [
+                "_".join(str(x) for x in col if x)
+                for col in summary.columns
+            ]
+            summary = summary.reset_index()
+
+            summary = summary.rename(columns={
+                "condition_nunique": "n_conditions",
+                "cos_sim_count": "n_scored",
+                "cos_sim_mean": "cos_sim_mean",
+                "cos_sim_std": "cos_sim_std",
+                "cos_sim_median": "cos_sim_median",
+                "n_stim_cells_sum": "total_stim_cells",
+                "n_stim_cells_median": "median_stim_cells",
+            })
+
+            # Add 2D classification counts and proportions
+            if "triage_2d" in df.columns:
+                categories = ["Unreliable", "Shared", "Specific"]
+
+                condition_keys = [
+                    "condition",
+                    *group_cols,
+                ]
+                condition_triage = df[
+                    condition_keys + ["triage_2d"]
+                ].drop_duplicates()
+
+                labels_per_condition = (
+                    condition_triage
+                    .groupby(condition_keys, dropna=False)["triage_2d"]
+                    .nunique(dropna=False)
+                )
+                if (labels_per_condition > 1).any():
+                    log.warning(
+                        "%d conditions have conflicting triage_2d labels "
+                        "for grouping %s",
+                        int((labels_per_condition > 1).sum()),
+                        grouping_name,
+                    )
+
+                # Only count conditions with exactly one valid category
+                condition_triage = condition_triage[
+                    condition_triage["triage_2d"].isin(categories)
+                ].drop_duplicates(condition_keys)
+
+                counts = (
+                    condition_triage
+                    .groupby(group_cols, dropna=False)["triage_2d"]
+                    .value_counts()
+                    .unstack(fill_value=0)
+                    .reindex(columns=categories, fill_value=0)
+                )
+
+                counts = counts.rename(columns={
+                    "Unreliable": "n_Unreliable",
+                    "Shared": "n_Shared",
+                    "Specific": "n_Specific",
+                })
+
+                counts["n_classified"] = counts[
+                    ["n_Unreliable", "n_Shared", "n_Specific"]
+                ].sum(axis=1)
+
+                for category in categories:
+                    counts[f"frac_{category}"] = (
+                        counts[f"n_{category}"]
+                        / counts["n_classified"].replace(0, np.nan)
+                    )
+
+                summary = summary.drop(
+                    columns=[
+                        c for c in [
+                            "n_Unreliable", "n_Shared", "n_Specific",
+                            "n_classified", "frac_Unreliable",
+                            "frac_Shared", "frac_Specific",
+                        ]
+                        if c in summary.columns
+                    ],
+                    errors="ignore",
+                )
+
+                summary = summary.merge(
+                    counts.reset_index(),
+                    on=group_cols,
+                    how="left",
+                )
+
+            # Standardize reliability and ceiling column names
+            if rel_col:
+                summary = summary.rename(columns={
+                    f"{rel_col}_mean": "reliability_mean",
+                    f"{rel_col}_median": "reliability_median",
+                })
+
+            if ceiling_col:
+                summary = summary.rename(columns={
+                    f"{ceiling_col}_mean": "ceiling_mean",
+                    f"{ceiling_col}_median": "ceiling_median",
+                })
+
+            # Save one CSV for this grouping.
+            out_path = (
+                self.output_dir
+                / f"systema_{mode}_cc_reliability_2d_summary_tahoe100m_"
+                  f"by_{grouping_name}_{cur_time}.csv"
+            )
+
+            summary.to_csv(out_path, index=False)
+            log.info("Saved %s summary: %s", grouping_name, out_path)
+
     def compute_systema_metrics(self, ds_name: str, mode: str, systema_dir: Path) -> pd.DataFrame:
         """
         Compute Systema's systematic variation metric for all (context, perturbation)
@@ -390,8 +586,7 @@ class SystematicStep(BaseSystematicStep):
 
             if n_perts == 0:
                 log.info(
-                    f"        Cell line '{cell_line_id}': "
-                    f"no perturbations, skipping"
+                    f"Cell line '{cell_line_id}': no perturbations, skipping"
                 )
                 continue
 
@@ -677,6 +872,9 @@ class SystematicStep(BaseSystematicStep):
                     merged_path = self.output_dir / f"systema_{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
                     merged_df.to_csv(merged_path, index=False)
                     log.info(f"  Saved: {merged_path}")
+
+                    if ds_name == 'tahoe100m':
+                        self.summarize_tahoe100m_by_group(mode, merged_df, cur_time)
 
                     # ---- Cross-dataset summary row ----
                     summary_row = {

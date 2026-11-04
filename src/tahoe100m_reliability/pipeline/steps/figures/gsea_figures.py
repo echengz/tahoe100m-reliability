@@ -562,8 +562,11 @@ def plot_nes_heatmap(
     plt.close(fig)
 
 
-def plot_gsea(
-    df: pd.DataFrame, output_dir: Path, organ_by_cell_line: dict[str, Any], title_postfix: str
+def plot_gsea_figures(
+    df: pd.DataFrame,
+    output_dir: Path,
+    organ_by_cell_line: dict[str, Any],
+    title_postfix: str,
 ) -> None:
     """Plot GSEA results.
 

@@ -11,7 +11,7 @@ from typing import Any
 from pathlib import Path
 
 
-RELIABILITY_THRESH = 0.5  # ρ cutoff — cos_sim is NaN for perts with ρ below this.
+RELIABILITY_THRESH = 0.5
 SPECIFICITY_THRESH = 0.5
 REL_COL_FALLBACKS = (
     "sb_from_median",
@@ -134,8 +134,8 @@ def load_systema_deltas(
     ds_name: str,
     systema_dir: Path,
     target_conds: set[str],
-    clusters: set[int] | None,
-    cell_lines: set[str] | None
+    clusters: set[int] | None = None,
+    cell_lines: set[str] | None = None
 ) -> dict[str, Any]:
     """Load the precomputed systema deltas."""
     if ds_name == 'tahoe100m':

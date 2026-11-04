@@ -5,7 +5,10 @@ import argparse
 
 from pathlib import Path
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import get_gene_metadata
+from tahoe100m_reliability.lib.tahoe100m_dataset import (
+    get_drug_metadata,
+    get_gene_metadata
+)
 
 
 class PipelineStep:
@@ -87,3 +90,15 @@ class BaseSystematicStep(PipelineStep):
                  + 'Systema systematic variation for; if not provided, defaults to '
                  + 'whatever data is available.'
         )
+
+    def load_drug_moa_mapping(self) -> dict[str, str]:
+        """Load drug-to-fine-MOA annotations from Tahoe100M."""
+        drug_metadata = get_drug_metadata(to_pandas=True)
+        metadata = drug_metadata[["drug", "moa-fine"]]
+        metadata["drug"] = (
+            metadata["drug"].astype(str).str.strip()
+        )
+
+        # Remove duplicate drug annotations
+        metadata = metadata.drop_duplicates(subset=["drug"])
+        return metadata.set_index("drug")["moa-fine"].to_dict()

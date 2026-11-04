@@ -15,7 +15,6 @@ from typing import Any
 
 from tahoe100m_reliability.lib.tahoe100m_dataset import (
     get_cell_line_metadata,
-    get_drug_metadata,
 )
 
 from .step_helpers.intermediate_loaders import (
@@ -104,7 +103,7 @@ class GseaStep(BaseSystematicStep):
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for this base systematic step to the given parser."""
+        """Add CLI args for this systematic step to the given parser."""
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
@@ -113,25 +112,9 @@ class GseaStep(BaseSystematicStep):
         )
 
         parser.add_argument(
-            '--moa-shared-axis', dest='moa_shared_axis',
-            action='store_true',
+            '--moa-shared-axis', dest='moa_shared_axis', action='store_true',
             help='Whether or not to calculate the MOA shared axis results'
         )
-
-    def load_drug_moa_mapping(self) -> dict[str, str]:
-        """Load drug-to-fine-MOA annotations from Tahoe100M."""
-        if not self.moa_shared_axis:
-            return {}
-
-        drug_metadata = get_drug_metadata(to_pandas=True)
-        metadata = drug_metadata[["drug", "moa-fine"]]
-        metadata["drug"] = (
-            metadata["drug"].astype(str).str.strip()
-        )
-
-        # Remove duplicate drug annotations
-        metadata = metadata.drop_duplicates(subset=["drug"])
-        return metadata.set_index("drug")["moa-fine"].to_dict()
 
     def __run_gsea(
         self,
@@ -176,7 +159,7 @@ class GseaStep(BaseSystematicStep):
         )
 
         hallmark_sets = load_hallmark_sets()
-        drug_to_moa = self.load_drug_moa_mapping()
+        drug_to_moa = self.load_drug_moa_mapping() if self.moa_shared_axis else {}
 
         # track globally and by drug
         all_rows = []

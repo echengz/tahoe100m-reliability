@@ -1,30 +1,18 @@
 """
 Helps generate reliability figures
 """
-import re
 import logging
-from pathlib import Path
-import textwrap
-
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.ticker import PercentFormatter
-from matplotlib.colors import ListedColormap
-from matplotlib.colors import TwoSlopeNorm
+import textwrap
+
+from pathlib import Path
 
 from ..step_helpers.compute_reliability import DEFAULT_N_HALF_GRID
 from ..step_helpers.intermediate_loaders import get_combined_split_half_reliability_df
 
 log = logging.getLogger(__name__)
-
-
-SPECIFICITY_COLORS = {
-    "Specific": "#1f77b4",
-    "Shared": "#ff7f0e",
-    "Unreliable": "#2ca02c",
-}
 
 
 def _plot_reliability_heatmap(
