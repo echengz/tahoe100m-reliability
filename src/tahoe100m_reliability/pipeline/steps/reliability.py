@@ -20,7 +20,6 @@ from typing import Any
 from tahoe100m_reliability.lib.hg_duckdb_query import batch_duckdb_query
 from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 
-from .pipeline_step import PipelineStep
 from .step_helpers.compute_reliability import (
     DEFAULT_N_HALF_GRID,
     compute_split_half_reliability,
@@ -29,6 +28,10 @@ from .step_helpers.compute_reliability import (
     summarize_edist_results,
     summarize_split_half_results,
 )
+from .step_helpers.pipeline_step import PipelineStep
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 ####################
 # GLOBAL CTRL DATA #
@@ -70,7 +73,7 @@ def init_worker_with_ctrl(
 def load_ctrl_to_shared_memory(
     cell_line_id: str,
     ctrl_gene_expressions_dir: Path,
-    expr_k: int | None,
+    expr_k: int,
     remove_genes: set[str] | None,
     normalize_cp10k: bool = False,
     workers: int = 1
@@ -144,7 +147,7 @@ def load_ctrl_to_shared_memory(
     mean_expr = ctrl_dense.mean(axis=0)
 
     # if specified, subset to top expressed genes
-    expr_k = min(expr_k, n_genes) if expr_k is not None else n_genes
+    expr_k = min(expr_k, n_genes) if expr_k >= 0 else n_genes
     if expr_k < n_genes:
         expr_idx = np.argpartition(mean_expr, -expr_k)[-expr_k:]
     else:
@@ -324,6 +327,10 @@ def compute_reliability(
 
 class ReliabilityStep(PipelineStep):
 
+    def __init__(self, args: argparse.Namespace) -> None:
+        """Initialize reliability step."""
+        self.args = args
+
     def __aggregate_stim_data(self, treatments: list[TreatmentSet], stim_dir: Path):
         """Localize and aggregate stim data from the HuggingFace repository."""
         # get all samples for treatments; should be localized to specific parquet files
@@ -420,14 +427,14 @@ class ReliabilityStep(PipelineStep):
                 jobs.append((
                     condition,
                     cell_line_dirs,
-                    seed + num_jobs_total
+                    self.__args.seed + num_jobs_total
                 ))
                 num_jobs_total += 1
 
             cell_line_jobs[cell_line_id] = jobs
 
         num_cell_lines = len(cell_line_jobs)
-        log.info(f"{num_jobs_total} jobs for {num_cell_lines} cell lines queued; will use {max_workers} workers")
+        log.info(f"{num_jobs_total} jobs for {num_cell_lines} cell lines queued; will use {self.args.workers} workers")
         log_memory_usage()
 
         return cell_line_jobs, num_jobs_total
@@ -435,19 +442,10 @@ class ReliabilityStep(PipelineStep):
     def process_treatment_cluster(
         self,
         cluster: str,
-        output_dir: Path,
         treatments: list[TreatmentSet],
         target_cell_lines: set[str],
-        ctrl_gene_expressions_dir: Path,
         n_half_grid: list[int],
-        n_repeats: int,
-        seed: int,
-        expr_k: int | None = None,
-        max_workers: int = 1,
-        stim_data_dir: Path | None = None,
         remove_genes: set[int] | None = None,
-        normalize_cp10k: bool = False,
-        skip_localization: bool = False
     ) -> None:
         """Process and compute reliability results for the given treatment cluster."""
         log.info(f"Processing cluster {cluster} with {len(treatments)} treatments")
@@ -461,9 +459,9 @@ class ReliabilityStep(PipelineStep):
 
         # temporary directory for this cluster of treatments
         with tempfile.TemporaryDirectory() as tmp_dir:
-            stim_dir = Path(tmp_dir) if stim_data_dir is None else stim_data_dir  # can handle this better
+            stim_dir = Path(tmp_dir) if self.args.stim_data_dir is None else self.args.stim_data_dir  # can handle this better
 
-            if not skip_localization:
+            if not self.args.skip_localization:
                 self.__aggregate_stim_data(treatments, stim_dir)
 
             log.info(f"Computing reliability for each cell line against controls for cluster {cluster}")
@@ -472,10 +470,10 @@ class ReliabilityStep(PipelineStep):
             cell_line_jobs, num_jobs_total = self.__set_up_cell_line_jobs(target_cell_lines)
 
             # systema intermediates
-            if normalize_cp10k:
-                systema_dir = output_dir / 'systema_cp10k'
+            if self.args.normalize_cp10k:
+                systema_dir = self.args.output_dir / 'systema_cp10k'
             else:
-                systema_dir = output_dir / 'systema'
+                systema_dir = self.args.output_dir / 'systema'
 
             systema_dir.mkdir(parents=True, exist_ok=True)
             job_num = 0
@@ -483,7 +481,12 @@ class ReliabilityStep(PipelineStep):
             for i, (cell_line_id, jobs) in enumerate(cell_line_jobs.items()):
                 # Load control for this cell line
                 shared_ctrl = load_ctrl_to_shared_memory(
-                    cell_line_id, ctrl_gene_expressions_dir, expr_k, remove_genes, normalize_cp10k, workers=max_workers
+                    cell_line_id,
+                    self.args.ctrl_gene_expressions_dir,
+                    self.args.expr_k,
+                    remove_genes,
+                    self.args.normalize_cp10k,
+                    workers=self.args.workers
                 )
 
                 # not enough controls to evaluate this cell line, drop corresponding conditions
@@ -501,7 +504,7 @@ class ReliabilityStep(PipelineStep):
                 try:
                     # Execute contexts in parallel
                     with ProcessPoolExecutor(
-                        max_workers=max_workers,
+                        max_workers=self.args.workers,
                         initializer=init_worker_with_ctrl,
                         initargs=(
                             shared_ctrl['shm'].name,
@@ -521,9 +524,9 @@ class ReliabilityStep(PipelineStep):
                                 cell_line_dirs=cell_line_dirs,
                                 task_seed=task_seed,
                                 n_half_grid=n_half_grid,
-                                n_repeats=n_repeats,
-                                delete_stim_data=stim_data_dir is None,
-                                normalize_cp10k=normalize_cp10k
+                                n_repeats=self.args.n_repeats,
+                                delete_stim_data=self.args.stim_data_dir is None,
+                                normalize_cp10k=self.args.normalize_cp10k
                             )
 
                             futures[future] = condition
@@ -575,7 +578,7 @@ class ReliabilityStep(PipelineStep):
                         systema_cell_line_dir = systema_dir / cell_line_id
                         systema_cell_line_dir.mkdir(parents=True, exist_ok=True)
 
-                        if normalize_cp10k:
+                        if self.args.normalize_cp10k:
                             delta_p_filename = f'{cell_line_id}_CP10k_cluster{cluster}.npz'
                         else:
                             delta_p_filename = f"{cell_line_id}_cluster{cluster}.npz" 
@@ -595,20 +598,22 @@ class ReliabilityStep(PipelineStep):
         summarize_split_half_results(
             cluster=cluster,
             all_rows=all_compute_results['split_half'],
-            expr_k=expr_k,
-            output_dir=output_dir,
+            expr_k=self.args.expr_k,
+            output_dir=self.args.output_dir,
         )
 
         # write out dropped genes
         cur_time = time.strftime('%Y%m%d-%H%M%S')
-        with (output_dir / f'dropped_genes_histogram_cluster_{cluster}_{cur_time}.json').open('w') as fh:
+        dropped_genes_filepath = self.args.output_dir / f'dropped_genes_histogram_cluster_{cluster}_{cur_time}.json'
+        with dropped_genes_filepath.open('w') as fh:
             json.dump(all_dropped_genes, fh, indent=4)
 
         del all_dropped_genes
 
         # write out skipped conditions
         if skipped_conditions:
-            with (output_dir / f"skipped_conditions_cluster_{cluster}_{cur_time}.json").open("w") as fh:
+            skipped_conditions_filepath = self.args.output_dir / f"skipped_conditions_cluster_{cluster}_{cur_time}.json"
+            with skipped_conditions_filepath.open("w") as fh:
                 json.dump({"skipped_conditions": skipped_conditions}, fh, indent=4)
 
         elapsed_total = time.time() - t_start
@@ -699,47 +704,39 @@ class ReliabilityStep(PipelineStep):
             help='Skip localization if data already lives under a passed stim-data-dir'
         )
 
-    def run(self, args: argparse.Namespace) -> None:
+    def run(self) -> None:
         """Run the full pipeline."""
-        n_half_grid = sorted({int(x.strip()) for x in args.n_half_grid.split(",") if x.strip()})
-        remove_genes = set([x.strip() for x in args.remove_genes.split(',')]) if args.remove_genes else None
+        n_half_grid = sorted({int(x.strip()) for x in self.args.n_half_grid.split(",") if x.strip()})
+        remove_genes = set([x.strip() for x in self.args.remove_genes.split(',')]) \
+            if self.args.remove_genes else None
 
         # Build target treatment list
         clustered_treatments = TreatmentSet.load_clusters_from_file(
-            treatments_file=args.indexed_treatments_file,
-            drug_dosages=args.drug_dosages_csv,
-            target_clusters=[int(x.strip()) for x in args.clusters.split(',')] if args.clusters else None
+            treatments_file=self.args.indexed_treatments_file,
+            drug_dosages=self.args.drug_dosages_csv,
+            target_clusters=[int(x.strip()) for x in self.args.clusters.split(',')] if self.args.clusters else None
         )
 
         target_cell_lines = []
-        if args.target_cell_lines_csv:
-            with args.target_cell_lines_csv.open('r') as fh:
+        if self.args.target_cell_lines_csv:
+            with self.args.target_cell_lines_csv.open('r') as fh:
                 reader = csv.DictReader(fh)
                 target_cell_lines = set(row['cell_line_id'] for row in reader)
         else:
 
             # get all possible cell lines from available controls
-            for file in args.ctrl_gene_expressions_dir.glob('*.parquet'):
+            for file in self.args.ctrl_gene_expressions_dir.glob('*.parquet'):
                 target_cell_lines.append(file.stem.replace('_gene_expressions', ''))
 
-        log.info(f"Targeting {len(target_cell_lines)} cell lines")
-        args.output_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"Targeting {len(self.__target_cell_lines)} cell lines")
+        self.args.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build gene expression matrices for all cell lines in this treatment
         for cluster, treatments in clustered_treatments.items():
             self.process_treatment_cluster(
                 cluster=cluster,
-                output_dir=args.output_dir,
                 treatments=treatments,
                 target_cell_lines=target_cell_lines,
-                ctrl_gene_expressions_dir=args.ctrl_gene_expressions_dir,
                 n_half_grid=n_half_grid,
-                n_repeats=args.n_repeats,
-                seed=args.seed,
-                expr_k=args.expr_k if args.expr_k >= 0 else None,
-                max_workers=args.workers,
-                stim_data_dir=args.stim_data_dir,
                 remove_genes=remove_genes,
-                normalize_cp10k=args.normalize_cp10k,
-                skip_localization=args.skip_localization
             )

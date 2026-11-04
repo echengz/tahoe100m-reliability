@@ -3,7 +3,7 @@ Runs the full pipeline
 """
 import argparse
 
-from .steps.pipeline_step import PipelineStep
+from .steps.step_helpers.pipeline_step import PipelineStep
 
 class Tahoe100mPipelineRunner(PipelineStep):
 

@@ -5,7 +5,10 @@ Allows for running all or specific steps of the pipeline.
 """
 import argparse
 
-from tahoe100m_reliability.pipeline.runner import Tahoe100mPipelineRunner
+from tahoe100m_reliability.pipeline import (
+    Tahoe100mPipelineRunner,
+    RegressionPipelineRunner,
+)
 from tahoe100m_reliability.pipeline.steps import (
     PreprocessStep,
     ReliabilityStep,
@@ -25,36 +28,35 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    #################
-    # FULL PIPELINE #
-    #################
+    # FULL PIPELINE
     all_parser = subparsers.add_parser(
         'all',
         help='Run the full pipeline'
     )
     Tahoe100mPipelineRunner.add_cli_args(all_parser)
 
-    ###################
-    # PREPROCESS STEP #
-    ###################
+    # REGRESSION PIPELINE
+    all_parser = subparsers.add_parser(
+        'regression',
+        help='Run the regression pipeline on the original 29 datasets'
+    )
+    RegressionPipelineRunner.add_cli_args(all_parser)
+
+    # PREPROCESS STEP
     preprocess_parser = subparsers.add_parser(
         'preprocess',
         help='Run the preprocessing step of the pipeline'
     )
     PreprocessStep.add_cli_args(preprocess_parser)
 
-    ####################
-    # RELIABILITY STEP #
-    ####################
+    # RELIABILITY STEP
     reliability_parser = subparsers.add_parser(
         'reliability',
         help='Run the reliability step of the pipeline'
     )
     ReliabilityStep.add_cli_args(reliability_parser)
 
-    ###################
-    # SYSTEMATIC STEP #
-    ###################
+    # SYSTEMATIC STEP
     systematic_parser = subparsers.add_parser(
         'systematic',
         help='Runs the systematic step of the pipeline'
@@ -69,16 +71,19 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == 'all':
-        Tahoe100mPipelineRunner().run(args)
-    elif args.command == 'preprocess':
-        PreprocessStep().run(args)
-    elif args.command == 'reliability':
-        ReliabilityStep().run(args)
-    elif args.command == 'systematic':
-        SystematicStep().run(args)
-    else:
+    runner_map = {
+        'all': Tahoe100mPipelineRunner,
+        'regression': RegressionPipelineRunner,
+        'preprocess': PreprocessStep,
+        'reliability': ReliabilityStep,
+        'systematic': SystematicStep,
+    }
+
+    runner = runner_map.get(args.command)
+    if not runner:
         raise ValueError(f'Unrecognized command: {args.command}')
+
+    runner(args).run()
 
 
 if __name__ == "__main__":

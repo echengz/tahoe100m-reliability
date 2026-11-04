@@ -14,7 +14,7 @@ from tahoe100m_reliability.lib.tahoe100m_dataset import (
 from tahoe100m_reliability.lib.hg_duckdb_query import batch_duckdb_query
 from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 
-from .pipeline_step import PipelineStep
+from .step_helpers.pipeline_step import PipelineStep
 from .figures.preprocess_figures import PreprocessFigures
 
 
@@ -29,6 +29,14 @@ log.addHandler(handler)
 
 
 class PreprocessStep(PipelineStep):
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        """Initialize the preprocess step."""
+        self.__treatment_sets_dir = args.treatment_sets_dir
+        self.__parquet_shard_start = args.parquet_shard_start
+
+        self.__generate_figures = args.generate_figures
+        self.__control_gene_expressions_dir  = args.control_gene_expressions_dir
 
     def get_treatment_sets(self) -> list[TreatmentSet]:
         """Get all known drug x dosage (perturbation) permutations (treatment sets)."""
@@ -61,22 +69,17 @@ class PreprocessStep(PipelineStep):
         log.info(f"Found {len(treatment_sets)} unique treatment sets")
         return list(treatment_sets.values())
 
-    def index_treatment_sets(
-        self,
-        treatment_sets: list[TreatmentSet],
-        output_dir: Path,
-        parquet_shard_start: int,
-    ) -> None:
+    def index_treatment_sets(self, treatment_sets: list[TreatmentSet]) -> None:
         """Index the treatment sets, i.e. figure out which parquet
         files it has cell data in. Uses DuckDB for fast SQL processing.
         """
         # list all parquet shards
         parquet_files = list_tahoe100m_parquet_files()
         log.info(f"Total parquet files in Tahoe100m: {len(parquet_files)}")
-        log.info(f"Starting at shard: {parquet_shard_start}")
+        log.info(f"Starting at shard: {self.__parquet_shard_start}")
 
-        if parquet_shard_start > 0:
-            parquet_files = parquet_files[parquet_shard_start:]
+        if self.__parquet_shard_start > 0:
+            parquet_files = parquet_files[self.__parquet_shard_start:]
 
         query = """
             SELECT DISTINCT sample, filename
@@ -96,7 +99,10 @@ class PreprocessStep(PipelineStep):
                         treatment.add_parquet_files(sample_indexes[sample])
 
             # write indexed treatment sets to file - updating as we go
-            with (output_dir / f'indexed_treatment_sets_{parquet_shard_start:05d}.json').open('w') as fh:
+            with (
+                self.__treatment_sets_dir / 
+                f'indexed_treatment_sets_{self.__parquet_shard_start:05d}.json'
+            ).open('w') as fh:
                 json.dump([
                     treatment.model_dump(mode='json')
                     for treatment in treatment_sets
@@ -147,10 +153,10 @@ class PreprocessStep(PipelineStep):
         cell_line_metadata = get_cell_line_metadata(to_pandas=True)
         log.info(cell_line_metadata.head())
 
-    def combine_indexed_treatment_sets(self, output_dir: Path) -> list[TreatmentSet]:
+    def combine_indexed_treatment_sets(self) -> list[TreatmentSet]:
         """Combine parts of indexed treatment sets, if needed."""
         treatment_sets = {}
-        for file in output_dir.glob('indexed_treatment_sets_*.json'):
+        for file in self.__treatment_sets_dir.glob('indexed_treatment_sets_*.json'):
             with open(file, 'r') as fh:
                 data = json.load(fh)
                 for x in data:
@@ -180,15 +186,13 @@ class PreprocessStep(PipelineStep):
                 for sample in treatment['samples']
             }
 
-        with (output_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
+        with (self.__treatment_sets_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
             json.dump([
                 treatment.model_dump(mode='json')
                 for treatment in treatment_sets.values()
             ], fh, indent=4)
 
-    def build_control_gene_expressions(
-        self, treatment_sets: list[TreatmentSet], output_dir: Path
-    ) -> None:
+    def build_control_gene_expressions(self, treatment_sets: list[TreatmentSet]) -> None:
         """Evaluate the control groups and build their expression matrices."""
         log.info("Building control gene expression matrices...")
 
@@ -224,7 +228,7 @@ class PreprocessStep(PipelineStep):
 
             # add new cells to matrix
             for cell_line_id, cells in new_cells.items():
-                filepath = Path(f'./ctrl_gene_expressions/{cell_line_id}_gene_expressions.parquet')
+                filepath = self.__control_gene_expressions_dir / f'{cell_line_id}_gene_expressions.parquet'
 
                 matrix = pd.concat(cells, axis=1).T
 
@@ -288,9 +292,9 @@ class PreprocessStep(PipelineStep):
             help='If provided, will build the control gene expression matrices and write to this directory'
         )
 
-    def run(self, args: argparse.Namespace) -> None:
+    def run(self) -> None:
         """Run the preprocess step."""
-        treatment_sets_file = args.treatment_sets_dir / 'combined_indexed_treatment_sets.json'
+        treatment_sets_file = self.__treatment_sets_dir / 'combined_indexed_treatment_sets.json'
 
         if not treatment_sets_file.is_file():
             # generate the treatment sets file
@@ -305,7 +309,7 @@ class PreprocessStep(PipelineStep):
             )
 
             # 2.1 combine parts
-            treatment_sets = self.combine_indexed_treatment_sets(args.treatment_sets_dir)
+            treatment_sets = self.combine_indexed_treatment_sets()
 
         else:
             # load from existing file
@@ -317,13 +321,11 @@ class PreprocessStep(PipelineStep):
         self.evaluate_treatment_sets(treatment_sets)
 
         # 4. Generate figures
-        if args.generate_figures:
-            output_dir = args.treatment_sets_dir / 'figures'
+        if self.__generate_figures:
+            output_dir = self.__treatment_sets_dir / 'figures'
             figures = PreprocessFigures(treatment_sets, output_dir)
             figures.generate_figures()
 
         # 5. Generate control gene expression matrices
-        if args.control_gene_expressions_dir:
-            self.build_control_gene_expressions(
-                treatment_sets, args.control_gene_expressions_dir
-            )
+        if self.__control_gene_expressions_dir:
+            self.build_control_gene_expressions(treatment_sets)

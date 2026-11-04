@@ -33,6 +33,10 @@ def get_sample_metadata(to_pandas: bool = False) -> IterableDataset | pd.DataFra
     return __get_dataset('sample_metadata', to_pandas=to_pandas)
 
 
+def get_gene_metadata(to_pandas: bool = False)  -> IterableDataset | pd.DataFrame:
+    return __get_dataset('gene_metadata', to_pandas=to_pandas)
+
+
 def list_tahoe100m_parquet_files() -> list[str]:
     files = list_repo_files(repo_id=TAHOE_100M_DATASET, repo_type='dataset')
     return [

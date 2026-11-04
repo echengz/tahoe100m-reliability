@@ -1,0 +1,213 @@
+"""
+Helper functions for loading intermediate data.
+"""
+import re
+import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
+
+from datetime import datetime
+from typing import Any
+from pathlib import Path
+
+
+RELIABILITY_THRESH = 0.5  # ρ cutoff — cos_sim is NaN for perts with ρ below this.
+SPECIFICITY_THRESH = 0.5
+
+
+def _get_reliability_df(ds_name: str, source_dir: Path, prefix: str, clusters: set[int] | None):
+    """Get clustered files and convert into a pandas dataframe."""
+    # group by cluster and if there are multiple files, use the latest timestamp
+    dated_pattern = re.compile(
+        rf"^{re.escape(prefix)}_(\d+)_(\d{{8}}-\d{{6}})\.csv$"
+    )
+    undated_pattern = re.compile(
+        rf"^{re.escape(prefix)}_(\d+)\.csv$"
+    )
+
+    dated_files = {}
+    undated_files = {}
+    for path in source_dir.glob(f"{prefix}*.csv"):
+        match = dated_pattern.match(path.name)
+        if match:
+            cluster, timestamp = match.groups()
+            timestamp = datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
+
+            if cluster not in dated_files or timestamp > dated_files[cluster][0]:
+                dated_files[cluster] = (timestamp, path)
+
+            continue
+        match = undated_pattern.match(path.name)
+        if match:
+            cluster = match.group(1)
+            undated_files[cluster] = path
+
+    # Prefer the latest dated file; otherwise use the undated file.
+    latest_files = {
+        cluster: path
+        for cluster, (_, path) in dated_files.items()
+    }
+
+    for cluster, path in undated_files.items():
+        latest_files.setdefault(cluster, path)
+
+    if clusters:
+        latest_files = {k: v for k, v in latest_files.items() if int(k) in clusters}
+
+    files = list(latest_files.values())
+
+    if not files:
+        raise FileNotFoundError(
+            f"No reliability files with prefix {prefix} found for the following clusters: {clusters}"
+        )
+
+    return pd.concat(
+        [pd.read_csv(path) for path in files],
+        ignore_index=True,
+    )
+
+
+def get_combined_split_half_reliability_df(
+    reliability_dir: Path,
+    clusters: set[int] | None = None,
+    summary: bool = False,
+    ds_name: str | None = 'tahoe100m'
+) -> pd.DataFrame:
+    """Get split-half reliability data as a pandas dataframe, combining all clusters"""
+    if summary:
+        prefix = f'reliability_summary_{ds_name}_cluster'
+    else:
+        prefix = f'reliability_{ds_name}_cluster'
+
+    return _get_reliability_df(ds_name, reliability_dir, prefix, clusters)
+
+
+def load_reliable_perts_cellular(
+    ds_name: str,
+    reliability_dir: Path,
+    clusters: set[int] | None,
+    rel_col_fallbacks=(
+            "sb_from_median",
+            "sb_from_mean",
+            "sb_from_median_all_genes",
+            "sb_from_mean_all_genes"
+        )
+    ) -> tuple[set[str], set[str]]:
+    """Load the per-(context,perturbation) reliability summary and return
+    the set of 'condition' keys (format 'ctx|drug|dosage') with ρ ≥ 0.5.
+    The cellular reliability CSVs are named `reliability*_tahoe100m_cluster_*.csv`.
+
+    """
+    rel_df = get_combined_split_half_reliability_df(reliability_dir, clusters, summary=False, ds_name=ds_name)
+    rel_col = next((c for c in rel_col_fallbacks if c in rel_df.columns), None)
+
+    if rel_col is None:
+        raise FileNotFoundError(f"Could not find reliability column for the following clusters: {clusters}")
+
+    reliable = rel_df[rel_df[rel_col] >= RELIABILITY_THRESH]
+    if "condition" not in reliable.columns:
+        raise ValueError("condition col not found in reliability data")
+
+    # return both the reliable and all conditions
+    return set(reliable["condition"].astype(str)), set(rel_df['condition'].astype(str))
+
+
+def load_gene_ids(ctrl_dir: Path, cell_line_id: str) -> np.array:
+    """Load the gene names (integers) from the control parquet file. Expects
+    column order to align with the delta_p values.
+    """
+    reference_parquet = ctrl_dir / f'{cell_line_id}_gene_expressions.parquet'
+    gene_ids = np.array([
+        name
+        for name in pq.read_schema(reference_parquet).names
+        if str(name) not in {"1", "__index_level_0__"}
+    ]).astype(np.int32)
+
+    return gene_ids
+
+
+def load_systema_deltas(
+    ds_name: str,
+    systema_dir: Path,
+    all_conds: set[str],
+    clusters: set[int] | None
+) -> dict[str, Any]:
+    """Load the precomputed systema deltas."""
+    if ds_name == 'tahoe100m':
+        # get all unique cell line IDs
+        all_cell_line_ids = {
+            cond.split("|")[0]
+            for cond in all_conds
+        }
+    else:
+        all_cell_line_ids = {''}
+
+    # iterate over each cell line and its perturbations
+    systema_data = {}
+    for cell_line_id in all_cell_line_ids:
+        cell_line_dir = systema_dir / cell_line_id
+
+        if not cell_line_dir.exists():
+            raise FileNotFoundError(f"Cannot find systema delta data for {cell_line_id}")
+
+        # accumulated condition information
+        condition_accum = {}
+
+        # load delta values
+        if ds_name == 'tahoe100m':
+            npz_files = cell_line_dir.glob('*.npz')
+        else:
+            npz_files = cell_line_dir.glob(f'*{ds_name}*.npz')
+
+        if clusters is not None:
+            npz_files = [
+                p for p in npz_files
+                if any(p.name.endswith(f"_cluster{k}.npz") for k in clusters)
+            ]
+
+        # select for reliable conditions
+        for npz_path in npz_files:
+            data = np.load(npz_path)
+            for condition, n_cells, delta in zip(
+                data['conditions'], data['n_stim_cells'], data['delta_p']
+            ):
+                condition = str(condition)
+                if condition not in all_conds:
+                    raise ValueError(f"Unrecognized condition: {condition}")
+                    log.warning(f"Unrecognized condition: {condition}")
+                    continue
+
+                if condition not in condition_accum:
+                    condition_accum[condition] = {
+                        'n_cells': 0,
+                        'weighted_delta': np.zeros_like(delta, dtype=np.float64)
+                    }
+
+                n_cells = int(n_cells)
+                condition_accum[condition]['n_cells'] += n_cells
+                condition_accum[condition]['weighted_delta'] += n_cells * delta
+
+        if not condition_accum:
+            raise ValueError(f"{cell_line_id} has no conditions to utilize")
+
+        conditions_out = []
+        n_stim_out = []
+        delta_out = []
+
+        # calculate delta_p from accumulated values
+        for condition, info in condition_accum.items():
+            n_cells = info["n_cells"]
+            delta = info["weighted_delta"] / n_cells
+
+            conditions_out.append(condition)
+            n_stim_out.append(n_cells)
+            delta_out.append(delta.astype(np.float32))
+
+        del condition_accum
+        systema_data[cell_line_id] = {
+            "conditions": np.array(conditions_out, dtype=object),
+            "n_stim_cells": np.array(n_stim_out, dtype=np.int32),
+            "delta_p": np.stack(delta_out, axis=0),
+        }
+
+    return systema_data
