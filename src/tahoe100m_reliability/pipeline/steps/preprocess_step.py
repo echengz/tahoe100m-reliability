@@ -15,7 +15,6 @@ from tahoe100m_reliability.lib.hg_duckdb_query import batch_duckdb_query
 from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 
 from .step_helpers.pipeline_step import PipelineStep
-from .figures.preprocess_figures import PreprocessFigures
 
 
 log = logging.getLogger(__name__)
@@ -35,7 +34,6 @@ class PreprocessStep(PipelineStep):
         self.treatment_sets_dir = args.treatment_sets_dir
         self.parquet_shard_start = args.parquet_shard_start
 
-        self.generate_figures = args.generate_figures
         self.control_gene_expressions_dir  = args.control_gene_expressions_dir
 
     def get_treatment_sets(self) -> list[TreatmentSet]:
@@ -281,12 +279,6 @@ class PreprocessStep(PipelineStep):
         )
 
         parser.add_argument(
-            '--generate-figures', dest='generate_figures',
-            action='store_true',
-            help='Generate figures; will write to a directory adjacent to the treatments file'
-        )
-
-        parser.add_argument(
             '--control-gene-expressions-dir', dest='control_gene_expressions_dir',
             type=Path, default=None,
             help='If provided, will build the control gene expression matrices and write to this directory'
@@ -320,12 +312,6 @@ class PreprocessStep(PipelineStep):
         # 3. Evaluate treatment sets to ensure they are valid
         self.evaluate_treatment_sets(treatment_sets)
 
-        # 4. Generate figures
-        if self.generate_figures:
-            output_dir = self.treatment_sets_dir / 'figures'
-            figures = PreprocessFigures(treatment_sets, output_dir)
-            figures.generate_figures()
-
-        # 5. Generate control gene expression matrices
+        # 4. Generate control gene expression matrices
         if self.control_gene_expressions_dir:
             self.build_control_gene_expressions(treatment_sets)

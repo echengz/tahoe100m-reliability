@@ -18,10 +18,6 @@ from tahoe100m_reliability.lib.tahoe100m_dataset import (
     get_drug_metadata,
 )
 
-from .figures.gsea_figures import (
-    plot_gsea,
-    FDR_THRESHOLD,
-)
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
     load_gene_ids,
@@ -304,22 +300,6 @@ class GseaStep(BaseSystematicStep):
             df = pd.DataFrame(rows)
             df['significant'] = df['FDR_qval'] < FDR_THRESHOLD
             df.to_csv(self.output_dir / f"{axis}_shared_axis_hallmark_gsea.csv", index=False)
-
-            # plot
-            log.info("Plotting GSEA results...")
-            figures_dir = self.output_dir / 'figures'
-
-            if axis == 'global':
-                log.info("Plotting global axis")
-                plot_gsea(df, figures_dir / 'global', organ_by_cell_line, "global")
-            else:
-                for moa, moa_df in df.groupby("moa"):
-                    # Make directory name filesystem-safe
-                    safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa))
-                    log.info(f"Plotting MOA axis: {moa}")
-                    plot_gsea(
-                        moa_df, figures_dir / "moa" / safe_moa, organ_by_cell_line, moa
-                    )
 
             # get the top positive and negative NES pathways
             # for every cell line and mode
