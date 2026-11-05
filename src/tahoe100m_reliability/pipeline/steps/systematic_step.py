@@ -23,6 +23,10 @@ from .step_helpers.intermediate_loaders import (
     SPECIFICITY_THRESH,
     REL_COL_FALLBACKS,
 )
+from .step_helpers.influence_accumulator import (
+    InfluenceAccumulator,
+    summarize_perturbation_influence,
+)
 from .step_helpers.pipeline_step import BaseSystematicStep
 
 logging.basicConfig(level=logging.INFO)
@@ -198,133 +202,6 @@ def score_perturbation(
     }
 
     return row, influences, valid
-
-
-def initialize_gene_accumulator(gene_ids):
-    n = len(gene_ids)
-
-    return {
-        'gene_ids': gene_ids,
-        'positive_influence': np.zeros(n),
-        'negative_influence': np.zeros(n),
-        'total_influence': np.zeros(n),
-        'total_influence_abs': np.zeros(n),
-        'num_instances': np.zeros(n, dtype=np.int64),
-        'categorical_change_towards_shared': np.zeros(n, dtype=np.int64),
-        'categorical_change_towards_specific': np.zeros(n, dtype=np.int64),
-        'categorical_change_neutral': np.zeros(n, dtype=np.int64),
-        'delta_p_magnitude_total': np.zeros(n),
-        'delta_p_magnitude_total_abs': np.zeros(n),
-        'delta_p_magnitude_total_pos': np.zeros(n),
-        'delta_p_magnitude_total_neg': np.zeros(n),
-        'num_upregulated': np.zeros(n, dtype=np.int64),
-        'num_downregulated': np.zeros(n, dtype=np.int64),
-
-        # Track cell lines separately
-        'cell_line_genes': {},
-    }
-
-
-def finalize_gene_accumulator(acc):
-    gene_ids = acc['gene_ids']
-
-    # Build gene -> cell lines mapping
-    cell_lines_by_gene = {}
-
-    for cell_line, genes in acc['cell_line_genes'].items():
-        for gene in genes:
-            cell_lines_by_gene.setdefault(gene, set()).add(cell_line)
-
-    fields = [
-        'negative_influence',
-        'positive_influence',
-        'total_influence',
-        'total_influence_abs',
-        'num_instances',
-        'categorical_change_towards_shared',
-        'categorical_change_towards_specific',
-        'categorical_change_neutral',
-        'delta_p_magnitude_total',
-        'delta_p_magnitude_total_abs',
-        'delta_p_magnitude_total_pos',
-        'delta_p_magnitude_total_neg',
-        'num_upregulated',
-        'num_downregulated',
-    ]
-
-    result = {}
-
-    for i in np.flatnonzero(acc['num_instances']):
-        gene = gene_ids[i].item()
-
-        result[gene] = {
-            field: acc[field][i].item()
-            for field in fields
-        }
-
-        result[gene]['cell_lines'] = cell_lines_by_gene.get(
-            gene, set()
-        )
-
-    return result
-
-def summarize_gene_influence_scores(
-    cell_line_id,
-    acc,
-    gene_ids,
-    delta_p,
-    influences,
-    valid,
-    frac_systematic,
-):
-    idx = np.flatnonzero(valid & np.isfinite(influences))
-
-    if len(idx) == 0:
-        return
-
-    inf = influences[idx]
-    dp = delta_p[idx]
-
-    # These indices correspond directly to positions in acc
-    # Assumes gene_ids has the same ordering in every call.
-    assert np.array_equal(gene_ids, acc['gene_ids'])
-
-    shared = (
-        (frac_systematic < SPECIFICITY_THRESH)
-        & (frac_systematic - inf >= SPECIFICITY_THRESH)
-    )
-
-    specific = (
-        (frac_systematic >= SPECIFICITY_THRESH)
-        & (frac_systematic - inf < SPECIFICITY_THRESH)
-    )
-
-    neutral = ~(shared | specific)
-
-    # Vectorized accumulation
-    acc['positive_influence'][idx] += np.maximum(inf, 0)
-    acc['negative_influence'][idx] += np.minimum(inf, 0)
-    acc['total_influence'][idx] += inf
-    acc['total_influence_abs'][idx] += np.abs(inf)
-    acc['num_instances'][idx] += 1
-
-    acc['delta_p_magnitude_total'][idx] += dp
-    acc['delta_p_magnitude_total_abs'][idx] += np.abs(dp)
-    acc['delta_p_magnitude_total_pos'][idx] += np.maximum(dp, 0)
-    acc['delta_p_magnitude_total_neg'][idx] += np.minimum(dp, 0)
-
-    acc['num_upregulated'][idx] += (dp >= 0)
-    acc['num_downregulated'][idx] += (dp < 0)
-
-    acc['categorical_change_towards_shared'][idx] += shared
-    acc['categorical_change_towards_specific'][idx] += specific
-    acc['categorical_change_neutral'][idx] += neutral
-
-    # One set update per perturbation, rather than one per gene
-    cell_line_genes = acc['cell_line_genes'].setdefault(
-        cell_line_id, set()
-    )
-    cell_line_genes.update(gene_ids[idx])
 
 
 class SystematicStep(BaseSystematicStep):
@@ -569,7 +446,10 @@ class SystematicStep(BaseSystematicStep):
         # ---- Compute Systema per cell line ----
         log.info("  [2/3] Computing cosine similarities and influence scores per cell line...")
         all_rows = []
-        all_influence_rows = {}
+        all_influence_rows_by_cell_line = {}
+        all_influence_rows_by_moa = {}
+        drug_to_moa = self.load_drug_moa_mapping()
+
         total_conditions = 0
         total_skipped = 0
 
@@ -592,7 +472,8 @@ class SystematicStep(BaseSystematicStep):
 
             # gene accumulator for influence scores
             gene_ids = load_gene_ids(self.ctrl_gene_expressions_dir, cell_line_id)
-            acc = initialize_gene_accumulator(gene_ids)
+            acc = InfluenceAccumulator(gene_ids)
+            moa_accs = {}
 
             # Group conditions by context.
             if ds_name == 'tahoe100m':
@@ -667,9 +548,8 @@ class SystematicStep(BaseSystematicStep):
                         all_rows.append(row)
 
                         if influences is not None and valid is not None:
-                            summarize_gene_influence_scores(
+                            acc.accumulate(
                                 cell_line_id,
-                                acc,
                                 gene_ids,
                                 delta_p,
                                 influences,
@@ -677,32 +557,128 @@ class SystematicStep(BaseSystematicStep):
                                 row['frac_systematic_var'],
                             )
 
-            all_influence_rows = finalize_gene_accumulator(acc)
+                            # also group by MOA
+                            moa = drug_to_moa.get(condition.split("|")[1])
+                            if moa not in moa_accs:
+                                moa_accs[moa] = InfluenceAccumulator(gene_ids)
 
+                            moa_accs[moa].accumulate(
+                                cell_line_id,
+                                gene_ids,
+                                delta_p,
+                                influences,
+                                valid,
+                                row['frac_systematic_var'],
+                            )
+
+            # aggregate accumulator results by cell line and MOA
+            # by cell line
+            all_influence_rows_by_cell_line[cell_line_id] = acc.finalize_by_gene()
+
+            # by MOA
+            for moa, moa_acc in moa_accs.items():
+                moa_gene_rows = moa_acc.finalize_by_gene()
+
+                if moa not in all_influence_rows_by_moa:
+                    all_influence_rows_by_moa[moa] = {}
+
+                for gene_id, influence in moa_gene_rows.items():
+
+                    if gene_id not in all_influence_rows_by_moa[moa]:
+                        all_influence_rows_by_moa[moa][gene_id] = {
+                            key: 0
+                            for key in influence
+                            if key != 'cell_lines'
+                        }
+                        all_influence_rows_by_moa[moa][gene_id]['cell_lines'] = set()
+
+                    global_gene = all_influence_rows_by_moa[moa][gene_id]
+
+                    for key, value in influence.items():
+                        if key == 'cell_lines':
+                            global_gene['cell_lines'].update(value)
+                        else:
+                            global_gene[key] += value
+
+        # merge gene influence across cell lines, and also save top genes per cell line
+        global_influence_rows = {}
+        top_genes_by_cell_line_df = pd.DataFrame()
+        n_genes_per_grouping = 200
+
+        for cell_line_id, gene_rows in all_influence_rows_by_cell_line.items():
+
+            # global accumulation
+            for gene_id, influence in gene_rows.items():
+
+                if gene_id not in global_influence_rows:
+                    global_influence_rows[gene_id] = {
+                        key: 0
+                        for key in influence
+                        if key != 'cell_lines'
+                    }
+                    global_influence_rows[gene_id]['cell_lines'] = set()
+
+                global_gene = global_influence_rows[gene_id]
+
+                # Sum all additive metrics
+                for key, value in influence.items():
+                    if key == 'cell_lines':
+                        global_gene['cell_lines'].update(value)
+                    else:
+                        global_gene[key] += value
+
+            # rank genes within this cell line
+            cell_line_influence_summary = []
+            for gene_id, influence in gene_rows.items():
+                row = summarize_perturbation_influence(gene_id, influence)
+                row['cell_line_id'] = cell_line_id
+                cell_line_influence_summary.append(row)
+            
+            # keep top genes per cell line
+            cell_line_df = pd.DataFrame(cell_line_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
+            top_genes_by_cell_line_df = pd.concat(
+                [top_genes_by_cell_line_df, cell_line_df],
+                ignore_index=True,
+            )
+
+        del all_influence_rows_by_cell_line
+
+        top_genes_by_cell_line_df.to_csv(
+            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line.csv',
+            index=False
+        )
+        del top_genes_by_cell_line_df
+
+        # by MOA
+        top_genes_by_moa_df = pd.DataFrame()
+        for moa, gene_rows in all_influence_rows_by_moa.items():
+            moa_influence_summary = []
+            for gene_id, influence in gene_rows.items():
+                row = summarize_perturbation_influence(gene_id, influence)
+                row['moa'] = moa
+                moa_influence_summary.append(row)
+
+            # keep top genes per MOA
+            moa_df = pd.DataFrame(moa_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
+            top_genes_by_moa_df = pd.concat(
+                [top_genes_by_moa_df, moa_df],
+                ignore_index=True,
+            )
+        del all_influence_rows_by_moa
+
+        top_genes_by_moa_df.to_csv(
+            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_moa.csv',
+            index=False
+        )
+        del top_genes_by_moa_df
+
+        # Build influence summary
         influence_summary = []
-        for gene_id, influence in all_influence_rows.items():
-            num_instances = influence['num_instances']
 
-            influence_summary.append({
-                'token_id': gene_id,
-                'avg_influence': influence['total_influence'] / influence['num_instances'],
-                'negative_influence': influence['negative_influence'],
-                'positive_influence': influence['positive_influence'],
-                'total_influence': influence['total_influence'],
-                'total_influence_abs': influence['total_influence_abs'],
-                'num_instance': num_instances,
-                'num_cell_lines': len(influence['cell_lines']),
-                'categorical_change_towards_shared': influence['categorical_change_towards_shared'],
-                'categorical_change_towards_specific': influence['categorical_change_towards_specific'],
-                'categorical_change_neutral': influence['categorical_change_neutral'],
-                'delta_p_magnitude_avg': influence['delta_p_magnitude_total'] / num_instances,
-                'delta_p_magnitude_abs_avg': influence['delta_p_magnitude_total_abs'] / num_instances,
-                'delta_p_magnitude_pos_avg': influence['delta_p_magnitude_total_pos'] / num_instances,
-                'delta_p_magnitude_neg_avg': influence['delta_p_magnitude_total_neg'] / num_instances,
-                'num_upregulated': influence['num_upregulated'],
-                'num_downregulated': influence['num_downregulated']
-            })
-        del all_influence_rows
+        for gene_id, influence in global_influence_rows.items():
+            influence_summary.append(summarize_perturbation_influence(gene_id, influence))
+
+        del global_influence_rows
 
         influence_df = pd.DataFrame(influence_summary)
         # map to gene_metadata
@@ -714,14 +690,7 @@ class SystematicStep(BaseSystematicStep):
         )
 
         # Keep the top 1000 genes by mean absolute influence
-        influence_df = (
-            influence_df.assign(
-                mean_abs_influence=influence_df['total_influence_abs'] / influence_df['num_instance']
-            )
-            .nlargest(1000, 'mean_abs_influence')
-        )
-
-        influence_df.to_csv(
+        influence_df.nlargest(1000, 'mean_abs_influence').to_csv(
             self.output_dir / f'systema_{mode}_summary_top1000_influential_genes.csv',
             index=False
         )
