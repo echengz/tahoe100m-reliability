@@ -4,6 +4,10 @@ Accumulator for the systematic step to accumulate influence scores.
 import numpy as np
 from typing import Any
 
+from .intermediate_loaders import (
+    SPECIFICITY_THRESH
+)
+
 
 class InfluenceAccumulator:
 
@@ -40,8 +44,8 @@ class InfluenceAccumulator:
         self.__acc.update({k: np.zeros(n) for k in self.ACCUM_FIELDS_FLOAT})
         self.__acc.update({k: np.zeros(n, dtype=np.int64) for k in self.ACCUM_FIELDS_INT})
 
-    def __setitem__(self, key, item) -> Any:
-        return self.__acc[key] = item
+    def __setitem__(self, key, item) -> None:
+        self.__acc[key] = item
 
     def __getitem__(self, key) -> Any:
         return self.__acc[key]

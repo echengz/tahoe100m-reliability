@@ -20,8 +20,8 @@ from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 
 from .figures.gsea_figures import plot_gsea_figures
 from .figures.preprocess_figures import PreprocessFigures
-from .figures.reliability_figures import plot_reliability_figures
-from .figures.systematic_figures import plot_systematic_figures
+from .figures.reliability_figures import ReliabilityFigures
+from .figures.systematic_figures import SystematicFigures
 from .step_helpers.pipeline_step import PipelineStep
 
 logging.basicConfig(level=logging.INFO)
@@ -109,7 +109,8 @@ class FiguresStep(PipelineStep):
                 reliability_output_dir = self.__output_dir / f'reliability_{mode}'
                 reliability_output_dir.mkdir(parents=True, exist_ok=True)
 
-                plot_reliability_figures(rel_dir, reliability_output_dir)
+                figures = ReliabilityFigures(rel_dir, reliability_output_dir)
+                figures.generate_figures()
 
         systema_map = {
             'raw': self.__systema_raw_dir,
@@ -121,7 +122,8 @@ class FiguresStep(PipelineStep):
                 systema_output_dir = self.__output_dir / f'systema_{mode}'
                 systema_output_dir.mkdir(parents=True, exist_ok=True)
 
-                plot_systematic_figures(systema_dir, systema_output_dir, mode)
+                figures = SystematicFigures(systema_dir, systema_output_dir, mode)
+                figures.generate_figures()
 
         # Generate GSEA figures
         if self.__gsea_dir:
@@ -139,12 +141,22 @@ class FiguresStep(PipelineStep):
 
                 if axis == 'global':
                     log.info("Plotting global axis")
-                    plot_gsea_figures(df, gsea_output_dir / 'global', organ_by_cell_line, "global")
+                    plot_gsea_figures(
+                        df,
+                        gsea_output_dir,
+                        "gsea_global",
+                        organ_by_cell_line,
+                        "Global"
+                    )
                 else:
                     for moa, moa_df in df.groupby("moa"):
                         # Make directory name filesystem-safe
-                        safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa))
+                        safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
                         log.info(f"Plotting MOA axis: {moa}")
                         plot_gsea_figures(
-                            moa_df, gsea_output_dir / "moa" / safe_moa, organ_by_cell_line, moa
+                            moa_df,
+                            gsea_output_dir,
+                            f"gsea_moa_{safe_moa}" ,
+                            organ_by_cell_line,
+                            moa
                         )

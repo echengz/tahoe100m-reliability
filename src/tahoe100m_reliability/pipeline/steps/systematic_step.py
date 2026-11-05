@@ -636,6 +636,13 @@ class SystematicStep(BaseSystematicStep):
             
             # keep top genes per cell line
             cell_line_df = pd.DataFrame(cell_line_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
+            cell_line_df = cell_line_df.merge(
+                self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
+                on='token_id',
+                how='left',
+                validate='many_to_one',
+            )
+            
             top_genes_by_cell_line_df = pd.concat(
                 [top_genes_by_cell_line_df, cell_line_df],
                 ignore_index=True,
@@ -644,7 +651,7 @@ class SystematicStep(BaseSystematicStep):
         del all_influence_rows_by_cell_line
 
         top_genes_by_cell_line_df.to_csv(
-            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line.csv',
+            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line_id.csv',
             index=False
         )
         del top_genes_by_cell_line_df
@@ -660,6 +667,13 @@ class SystematicStep(BaseSystematicStep):
 
             # keep top genes per MOA
             moa_df = pd.DataFrame(moa_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
+            moa_df = moa_df.merge(
+                self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
+                on='token_id',
+                how='left',
+                validate='many_to_one',
+            )
+
             top_genes_by_moa_df = pd.concat(
                 [top_genes_by_moa_df, moa_df],
                 ignore_index=True,

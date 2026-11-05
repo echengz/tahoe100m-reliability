@@ -44,125 +44,72 @@ HEATMAP_LEFT = 0.25
 COLORBAR_GAP = 0.02
 COLORBAR_WIDTH = 0.018
 
+HALLMARK_GROUPINGS = {
+    "Apical Junction":"Cellular\nComponent",
+    "Apical Surface":"Cellular\nComponent",
+    "Peroxisome":"Cellular\nComponent",
+    "Adipogenesis":"Development",
+    "Angiogenesis":"Development",
+    "Epithelial Mesenchymal Transition":"Development",
+    "Myogenesis":"Development",
+    "Pancreas Beta Cells":"Development",
+    "Spermatogenesis":"Development",
+    "DNA Repair":"DNA Damage",
+    "UV Response Dn":"DNA Damage",
+    "UV Response Up":"DNA Damage",
+    "Allograft Rejection":"Immune",
+    "Coagulation":"Immune",
+    "Complement":"Immune",
+    "Inflammatory Response":"Immune",
+    "Interferon Alpha Response":"Immune",
+    "Interferon Gamma Response":"Immune",
+    "Bile Acid Metabolism":"Metabolic",
+    "Cholesterol Homeostasis":"Metabolic",
+    "Fatty Acid Metabolism":"Metabolic",
+    "Glycolysis":"Metabolic",
+    "heme Metabolism":"Metabolic",
+    "Oxidative Phosphorylation":"Metabolic",
+    "Reactive Oxygen Species Pathway":"Metabolic",
+    "Xenobiotic Metabolism":"Metabolic",
+    "Androgen Response":"Pathway (Signaling)",
+    "Estrogen Response Early":"Pathway (Signaling)",
+    "Estrogen Response Late":"Pathway (Signaling)",
+    "Hedgehog Signaling":"Pathway (Signaling)",
+    "IL-2/STAT5 Signaling":"Pathway (Signaling)",
+    "IL-6/JAK/STAT3 Signaling":"Pathway (Signaling)",
+    "KRAS Signaling Dn":"Pathway (Signaling)",
+    "KRAS Signaling Up":"Pathway (Signaling)",
+    "mTORC1 Signaling":"Pathway (Signaling)",
+    "Notch Signaling":"Pathway (Signaling)",
+    "PI3K/AKT/mTOR  Signaling":"Pathway (Signaling)",
+    "Protein Secretion":"Pathway (Signaling)",
+    "TGF-beta Signaling":"Pathway (Signaling)",
+    "TNF-alpha Signaling via NF-kB":"Pathway (Signaling)",
+    "Wnt-beta Catenin Signaling":"Pathway (Signaling)",
+    "Apoptosis":"Proliferation (Cell Cycle)",
+    "E2F Targets":"Proliferation (Cell Cycle)",
+    "G2-M Checkpoint":"Proliferation (Cell Cycle)",
+    "Mitotic Spindle":"Proliferation (Cell Cycle)",
+    "Myc Targets V1":"Proliferation (Cell Cycle)",
+    "Myc Targets V2":"Proliferation (Cell Cycle)",
+    "p53 Pathway":"Proliferation (Cell Cycle)",
+    "Hypoxia":"Stress",
+    "Unfolded Protein Response":"Stress"
+}
+
 
 # ============================================================
 # BIOLOGICAL PATHWAY GROUPS
 # ============================================================
 
-def pathway_group(term):
-    """Assign a pathway to a broad biological group."""
-
-    t = str(term).lower().replace("_", " ").replace("-", " ")
-    t = " ".join(t.split())
-
-    if "myc targets" in t:
-        return "MYC / growth"
-
-    if any(x in t for x in [
-        "e2f targets",
-        "g2m checkpoint",
-        "mitotic spindle",
-        "unfolded protein response",
-    ]):
-        return "Cell cycle / proliferation"
-
-    if any(x in t for x in [
-        "interferon",
-        "inflammatory response",
-        "tnfa signaling",
-        "il2 stat5",
-        "il6 jak stat3",
-        "complement",
-        "allograft rejection",
-    ]):
-        return "Immune / inflammation"
-
-    if any(x in t for x in [
-        "glycolysis",
-        "oxidative phosphorylation",
-        "fatty acid metabolism",
-        "cholesterol homeostasis",
-        "adipogenesis",
-        "bile acid metabolism",
-        "xenobiotic metabolism",
-        "peroxisome",
-        "heme metabolism",
-    ]):
-        return "Metabolism"
-
-    if any(x in t for x in [
-        "apoptosis",
-        "p53 pathway",
-        "reactive oxygen species",
-        "hypoxia",
-        "uv response",
-        "dna repair",
-    ]):
-        return "Stress / cell death"
-
-    if any(x in t for x in [
-        "tgf beta",
-        "wnt beta catenin",
-        "notch signaling",
-        "hedgehog signaling",
-        "kras signaling",
-        "krass signaling",
-        "estrogen response",
-        "androgen response",
-        "apical junction",
-        "epithelial mesenchymal transition",
-    ]):
-        return "Signaling / development"
-
-    return "Other pathways"
-
-
-GROUP_ORDER = [
-    "MYC / growth",
-    "Cell cycle / proliferation",
-    "Immune / inflammation",
-    "Metabolism",
-    "Stress / cell death",
-    "Signaling / development",
-    "Other pathways",
-]
-
-
-def pathway_sort_key(term):
-    """Sort pathways by biological group, then pathway name."""
-
-    group = pathway_group(term)
-
-    return (
-        GROUP_ORDER.index(group)
-        if group in GROUP_ORDER
-        else len(GROUP_ORDER),
-        str(term).lower(),
-    )
-
-
 def prepare_matrices(df, organ_by_cell_line):
     """
-    Use shared pathways and cell-line order for raw and CP10k.
-
-    Include a pathway if it is significant in at least one cell line
-    in either mode.
+    Use the complete configured Hallmark pathway set and shared
+    cell-line order for raw and CP10k.
     """
-
-    significant_rows = df[
-        (df["FDR_qval"] < FDR_THRESHOLD)
-        & df["NES"].notna()
-    ]
-
-    if significant_rows.empty:
-        raise ValueError(
-            f"No pathways have FDR < {FDR_THRESHOLD}."
-        )
-
-    terms = sorted(
-        significant_rows["term"].unique(),
-        key=pathway_sort_key,
-    )
+    # Always include every configured Hallmark pathway, regardless of
+    # significance or whether it appears in the input data
+    terms = sorted(HALLMARK_GROUPINGS.keys())
 
     cell_lines = sorted(
         df["cell_line"].unique(),
@@ -208,8 +155,7 @@ def prepare_grouped_plot_data(nes, fdr):
 
     The returned display arrays are separate from the CSV matrices.
     """
-
-    terms = sorted(nes.index.tolist(), key=pathway_sort_key)
+    terms = sorted(nes.index.tolist())
     cell_lines = nes.columns.tolist()
 
     plot_columns = []
@@ -217,20 +163,18 @@ def prepare_grouped_plot_data(nes, fdr):
     plot_fdr_columns = []
     column_types = []
 
-    groups = []
+    groups = set()
     for term in terms:
-        group = pathway_group(term)
-        if not groups or groups[-1] != group:
-            groups.append(group)
+        groups.add(HALLMARK_GROUPINGS[term])
 
-    for group in groups:
+    for group in sorted(list(groups)):
         plot_columns.append(group)
         plot_nes_columns.append(np.full(len(cell_lines), np.nan))
         plot_fdr_columns.append(np.full(len(cell_lines), np.nan))
         column_types.append("group")
 
         for term in terms:
-            if pathway_group(term) != group:
+            if HALLMARK_GROUPINGS[term] != group:
                 continue
 
             plot_columns.append(term)
@@ -565,6 +509,7 @@ def plot_nes_heatmap(
 def plot_gsea_figures(
     df: pd.DataFrame,
     output_dir: Path,
+    filename_prefix: str,
     organ_by_cell_line: dict[str, Any],
     title_postfix: str,
 ) -> None:
@@ -573,7 +518,8 @@ def plot_gsea_figures(
     Assumes as input the DF generated from the GSEA step, saved as
     `shared_axis_hallmark_gsea.csv`
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # fix Pperoxisome typo
+    df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
 
     # prepare matrices
     matrices = prepare_matrices(df, organ_by_cell_line)
@@ -604,17 +550,13 @@ def plot_gsea_figures(
         nes = matrices[mode]["nes"]
         fdr = matrices[mode]["fdr"]
 
-        # Export original matrices: pathways as rows, cell lines as columns
-        csv_path = output_dir / f"nes_matrix_{mode}.csv"
-        nes.to_csv(csv_path)
-
-        png_path = output_dir / f"nes_heatmap_{mode}.png"
+        output_path = output_dir / f"{filename_prefix}_{mode}_nes_heatmap.png"
 
         plot_nes_heatmap(
             nes=nes,
             fdr=fdr,
             title=f"Shared-axis Hallmark GSEA ({mode.upper()}) - {title_postfix}",
-            output_path=png_path,
+            output_path=output_path,
             vmax=vmax,
             organ_by_cell_line=organ_by_cell_line,
         )
