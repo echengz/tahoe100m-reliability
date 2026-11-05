@@ -4,9 +4,7 @@ Accumulator for the systematic step to accumulate influence scores.
 import numpy as np
 from typing import Any
 
-from .intermediate_loaders import (
-    SPECIFICITY_THRESH
-)
+from .intermediate_loaders import SPECIFICITY_THRESH
 
 
 class InfluenceAccumulator:
@@ -24,6 +22,8 @@ class InfluenceAccumulator:
 
     ACCUM_FIELDS_INT: list[str] = [
         'num_instances',
+        'num_positive_instances',
+        'num_negative_instances',
         'categorical_change_towards_shared',
         'categorical_change_towards_specific',
         'categorical_change_neutral',
@@ -90,6 +90,8 @@ class InfluenceAccumulator:
         self['total_influence'][idx] += inf
         self['total_influence_abs'][idx] += np.abs(inf)
         self['num_instances'][idx] += 1
+        self['num_positive_instances'][idx] += (inf > 0).astype(int)
+        self['num_negative_instances'][idx] += (inf < 0).astype(int)
 
         self['delta_p_magnitude_total'][idx] += dp
         self['delta_p_magnitude_total_abs'][idx] += np.abs(dp)
@@ -139,16 +141,22 @@ class InfluenceAccumulator:
 
 def summarize_perturbation_influence(gene_id: str, influence):
     num_instances = influence['num_instances']
+    num_positive_instances = influence['num_positive_instances']
+    num_negative_instances = influence['num_negative_instances']
 
     return {
         'token_id': gene_id,
         'avg_influence': influence['total_influence'] / num_instances,
+        'avg_positive_influence': influence['positive_influence'] / influence['num_positive_instances'] if num_positive_instances else 0,
+        'avg_negative_influence': influence['negative_influence'] / influence['num_negative_instances'] if num_negative_instances else 0,
         'negative_influence': influence['negative_influence'],
         'positive_influence': influence['positive_influence'],
         'total_influence': influence['total_influence'],
         'total_influence_abs': influence['total_influence_abs'],
         'mean_abs_influence': influence['total_influence_abs'] / num_instances,
-        'num_instance': num_instances,
+        'num_instances': num_instances,
+        'num_positive_instances': num_positive_instances,
+        'num_negative_instances': num_negative_instances,
         'num_cell_lines': len(influence['cell_lines']),
         'categorical_change_towards_shared': influence['categorical_change_towards_shared'],
         'categorical_change_towards_specific': influence['categorical_change_towards_specific'],

@@ -244,17 +244,21 @@ class SystematicFigures:
                 bbox_inches="tight",
             )
 
-    def plot_top_influential_genes(self, top_n: int = 10):
+    def plot_top_influential_genes(self, top_n: int = 15):
         """
-        Plot categorical scatter plots comparing group-specific gene
-        influence against the global influence. Colored by gene.
+        Plot three vertically stacked categorical scatter plots comparing
+        group-specific gene influence against global influence.
         """
         global_df = self.__grab_latest_systema_results(
             prefix=f'systema_{self.__mode}_top1000_influential_genes'
         )
 
-        influence_col = 'mean_abs_influence'
         ranking_col = 'total_influence_abs'
+        influence_cols = [
+            'avg_influence',
+            'avg_positive_influence',
+            'avg_negative_influence'
+        ]
 
         # Select top N genes based on global influence
         top_genes_df = (
@@ -267,89 +271,122 @@ class SystematicFigures:
 
         top_genes = top_genes_df['gene_symbol'].tolist()
 
-        # Global observations
-        global_plot_df = top_genes_df[
-            ['gene_symbol', influence_col]
-        ].copy()
-
-        global_plot_df['group'] = 'Global'
-
-        # Consistent colors across plots
+        # Consistent colors across all subplots
         palette = dict(zip(
             top_genes,
-            sns.color_palette('husl', len(top_genes))
+            sns.color_palette('turbo', len(top_genes))
         ))
 
         for group in ['cell_line_id', 'moa']:
+
             df = self.__grab_latest_systema_results(
                 prefix=f'systema_{self.__mode}_top200_influential_genes_by_{group}'
             )
 
-            # Only retain globally selected genes.
+            # Only retain globally selected genes
             df = df[df['gene_symbol'].isin(top_genes)].copy()
 
             if df.empty:
-                raise ValueError(f"Influential genes completely disjoint in {group}")
+                raise ValueError(
+                    f"Influential genes completely disjoint in {group}"
+                )
 
-            df = df[['gene_symbol', group, influence_col]].dropna()
-            df = df.rename(columns={group: 'group'})
-
-            # Append global observations.
-            plot_df = pd.concat(
-                [df, global_plot_df],
-                ignore_index=True
-            )
-
-            # Global is always the rightmost category.
+            # Prepare categorical groups
             categories = sorted(
-                plot_df.loc[
-                    plot_df['group'] != 'Global', 'group'
-                ].astype(str).unique()
+                df[group].dropna().astype(str).unique()
             )
             categories.append('Global')
 
-            plot_df['group'] = pd.Categorical(
-                plot_df['group'].astype(str),
-                categories=categories,
-                ordered=True
+            # Create figure with three vertically stacked subplots
+            fig, axes = plt.subplots(
+                nrows=3,
+                ncols=1,
+                figsize=(max(10, len(categories) * 0.7), 18),
+                sharex=True
             )
 
-            fig, ax = plt.subplots(
-                figsize=(max(10, len(categories) * 0.7), 7)
-            )
+            for ax, influence_col in zip(axes, influence_cols):
 
-            sns.stripplot(
-                data=plot_df,
-                x='group',
-                y=influence_col,
-                hue='gene_symbol',
-                hue_order=top_genes,
-                palette=palette,
-                jitter=0.2,
-                dodge=False,
-                alpha=0.85,
-                size=7,
-                ax=ax
-            )
+                # Group-specific observations
+                group_plot_df = df[
+                    ['gene_symbol', group, influence_col]
+                ].dropna().copy()
 
-            ax.set_title(
-                f'Top {top_n} globally influential genes by {group}'
-            )
-            ax.set_xlabel(group.replace('_', ' ').title())
-            ax.set_ylabel('Mean absolute influence')
+                group_plot_df = group_plot_df.rename(
+                    columns={group: 'group'}
+                )
 
-            ax.tick_params(axis='x', rotation=45)
-            ax.grid(axis='y', alpha=0.3)
+                # Global observations
+                global_plot_df = top_genes_df[
+                    ['gene_symbol', influence_col]
+                ].copy()
 
-            ax.legend(
+                global_plot_df['group'] = 'Global'
+
+                # Combine observations
+                plot_df = pd.concat(
+                    [group_plot_df, global_plot_df],
+                    ignore_index=True
+                )
+
+                plot_df['group'] = pd.Categorical(
+                    plot_df['group'].astype(str),
+                    categories=categories,
+                    ordered=True
+                )
+
+                sns.stripplot(
+                    data=plot_df,
+                    x='group',
+                    y=influence_col,
+                    hue='gene_symbol',
+                    hue_order=top_genes,
+                    palette=palette,
+                    jitter=0.2,
+                    dodge=False,
+                    alpha=0.85,
+                    size=7,
+                    ax=ax,
+                    legend=False
+                )
+
+                ax.set_title(influence_col.replace('_', ' ').title())
+                ax.set_ylabel('Influence')
+                ax.grid(axis='y', alpha=0.3)
+                ax.set_xlabel('')
+
+            # Shared x-axis
+            axes[-1].set_xticks(range(len(categories)))
+            axes[-1].set_xticklabels(categories, rotation=90)
+
+            # Single shared legend
+            handles, labels = axes[0].get_legend_handles_labels()
+
+            fig.legend(
+                handles,
+                labels,
                 title='Gene',
-                bbox_to_anchor=(1.02, 1),
+                bbox_to_anchor=(1.01, 0.95),
                 loc='upper left'
+            )
+
+            fig.suptitle(
+                f'Top {top_n} globally influential genes by {group}',
+                fontsize=16,
+                y=1.01
             )
 
             sns.despine()
             plt.tight_layout()
-            plt.savefig(self.__output_dir / f"systema_{self.__mode}_influence_by_{group}.png",)
+
+            plt.savefig(
+                self.__output_dir /
+                f"systema_{self.__mode}_influence_by_{group}.png",
+                dpi=300,
+                bbox_inches='tight'
+            )
+
+            plt.close(fig)
 
     def generate_figures(self) -> None:
         self.plot_systematic_all()
