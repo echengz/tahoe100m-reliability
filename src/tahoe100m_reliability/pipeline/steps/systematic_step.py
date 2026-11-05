@@ -408,7 +408,9 @@ class SystematicStep(BaseSystematicStep):
             summary.to_csv(out_path, index=False)
             log.info("Saved %s summary: %s", grouping_name, out_path)
 
-    def compute_systema_metrics(self, ds_name: str, mode: str, systema_dir: Path) -> pd.DataFrame:
+    def compute_systema_metrics(
+        self, ds_name: str, mode: str, systema_dir: Path, cur_time: str
+    ) -> pd.DataFrame:
         """
         Compute Systema's systematic variation metric for all (context, perturbation)
         conditions in a cellular context dataset.
@@ -651,7 +653,7 @@ class SystematicStep(BaseSystematicStep):
         del all_influence_rows_by_cell_line
 
         top_genes_by_cell_line_df.to_csv(
-            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line_id.csv',
+            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line_id_{cur_time}.csv',
             index=False
         )
         del top_genes_by_cell_line_df
@@ -681,7 +683,7 @@ class SystematicStep(BaseSystematicStep):
         del all_influence_rows_by_moa
 
         top_genes_by_moa_df.to_csv(
-            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_moa.csv',
+            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_moa_{cur_time}.csv',
             index=False
         )
         del top_genes_by_moa_df
@@ -705,7 +707,7 @@ class SystematicStep(BaseSystematicStep):
 
         # Keep the top 1000 genes by mean absolute influence
         influence_df.nlargest(1000, 'mean_abs_influence').to_csv(
-            self.output_dir / f'systema_{mode}_summary_top1000_influential_genes.csv',
+            self.output_dir / f'systema_{mode}_top1000_influential_genes_{cur_time}.csv',
             index=False
         )
         del influence_summary
@@ -842,7 +844,7 @@ class SystematicStep(BaseSystematicStep):
                 all_summary_rows[mode] = []
 
                 for ds_name in self.datasets:
-                    systema_df = self.compute_systema_metrics(ds_name, mode, systema_dir)
+                    systema_df = self.compute_systema_metrics(ds_name, mode, systema_dir, cur_time)
 
                     # Save Systema-only results
                     systema_path = self.output_dir / f"systema_{mode}_{ds_name}_{cur_time}.csv"
