@@ -37,8 +37,7 @@ class FiguresStep(PipelineStep):
         self.__preprocess_dir = args.preprocess_dir
         self.__reliability_raw_dir = args.reliability_raw_dir
         self.__reliability_cp10k_dir = args.reliability_cp10k_dir
-        self.__systema_raw_dir = args.systema_raw_dir
-        self.__systema_cp10k_dir = args.systema_cp10k_dir
+        self.__systema_dir = args.systema_dir
         self.__gsea_dir = args.gsea_dir
 
     @classmethod
@@ -67,12 +66,8 @@ class FiguresStep(PipelineStep):
             help="Path to the reliability resuls"
         )
         parser.add_argument(
-            '--systema-raw-dir', dest='systema_raw_dir', type=Path,
-            help='Path to the systematic raw results'
-        )
-        parser.add_argument(
-            '--systema-cp10k-dir', dest='systema_cp10k_dir', type=Path,
-            help='Path to systematic CP10k results'
+            '--systema-dir', dest='systema_dir', type=Path,
+            help='Path to the systematic results (assumes both raw and cp10k are in there)'
         )
         parser.add_argument(
             '--gsea-dir', dest='gsea_dir', type=Path,
@@ -112,17 +107,13 @@ class FiguresStep(PipelineStep):
                 figures = ReliabilityFigures(rel_dir, reliability_output_dir)
                 figures.generate_figures()
 
-        systema_map = {
-            'raw': self.__systema_raw_dir,
-            'cp10k': self.__systema_cp10k_dir
-        }
-        for mode, systema_dir in systema_map.items():
-            if systema_dir:
+        if self.__systema_dir:
+            for mode in ['raw', 'cp10k']:
                 log.info(f"Generating {mode} systema figures...")
                 systema_output_dir = self.__output_dir / f'systema_{mode}'
                 systema_output_dir.mkdir(parents=True, exist_ok=True)
 
-                figures = SystematicFigures(systema_dir, systema_output_dir, mode)
+                figures = SystematicFigures(self.__systema_dir, systema_output_dir, mode)
                 figures.generate_figures()
 
         # Generate GSEA figures

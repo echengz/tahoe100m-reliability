@@ -32,6 +32,9 @@ logging.disable(logging.WARNING)
 import gseapy as gp
 
 
+FDR_THRESHOLD = 0.05
+
+
 def load_hallmark_sets():
     """Load hallmark sets."""
     library = blitz.enrichr.get_library("MSigDB_Hallmark_2020")
@@ -74,8 +77,11 @@ def gsea_nes(vec, genes_upper, hallmark_sets):
 
         return {
             str(row.Term).replace("HALLMARK_", ""): {
-                "NES": float(row.NES),
-                "FDR_qval": float(row["FDR q-val"]),
+                "nes": float(row['NES']),
+                "fdr_qval": float(row['FDR q-val']),
+                "tag_pct": row['Tag %'],
+                "gene_pct": row['Gene %'],
+                "lead_genes": row['Lead_genes']
             }
             for _, row in result.iterrows()
         }
@@ -107,7 +113,7 @@ class GseaStep(BaseSystematicStep):
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
-            '--num-top-pathways', dest='num_top_pathways', required=False, type=int, default=5,
+            '--num-top-pathways', dest='num_top_pathways', required=False, type=int, default=10,
             help='Number of top positive/negative NES pathways to retain'
         )
 
@@ -141,8 +147,12 @@ class GseaStep(BaseSystematicStep):
                 "mode": mode,
                 "cell_line": cell_line,
                 "term": term,
-                "NES": stats["NES"],
-                "FDR_qval": stats["FDR_qval"],
+                "nes": stats["nes"],
+                "fdr_qval": stats["fdr_qval"],
+                "tag_pct": stats["tag_pct"],
+                "gene_pct": stats["gene_pct"],
+                "lead_genes": stats["lead_genes"],
+                "n_lead_genes": len(stats["lead_genes"].split(";")),
                 "n_reliable_conditions": len(conds),
                 "n_genes_ranked": len(gene_symbols),
             }
@@ -174,7 +184,7 @@ class GseaStep(BaseSystematicStep):
             })
 
             log.info(f"\n[{mode}] {len(cell_lines)} cell line(s) to process")
-            for cell_line in tqdm(cell_lines, desc="Processing cell lines"):
+            for cell_line in tqdm(cell_lines, desc=f"Processing cell lines for mode {mode}"):
                 # Load deltas
                 systema_data = load_systema_deltas(
                     ds_name=self.ds_name,
@@ -281,7 +291,7 @@ class GseaStep(BaseSystematicStep):
                 continue
 
             df = pd.DataFrame(rows)
-            df['significant'] = df['FDR_qval'] < FDR_THRESHOLD
+            df['significant'] = df['fdr_qval'] < FDR_THRESHOLD
             df.to_csv(self.output_dir / f"{axis}_shared_axis_hallmark_gsea.csv", index=False)
 
             # get the top positive and negative NES pathways
@@ -293,12 +303,12 @@ class GseaStep(BaseSystematicStep):
 
             summaries = []
             for _, group in df.groupby(group_columns):
-                group = group.dropna(subset=["NES"])
+                group = group.dropna(subset=["nes"])
 
-                positive = group[group["NES"] > 0].nlargest(self.num_top_pathways, "NES").copy()
+                positive = group[group["nes"] > 0].nlargest(self.num_top_pathways, "nes").copy()
                 positive["direction"] = "positive"
 
-                negative = group[group["NES"] < 0].nsmallest(self.num_top_pathways, "NES").copy()
+                negative = group[group["nes"] < 0].nsmallest(self.num_top_pathways, "nes").copy()
                 negative["direction"] = "negative"
 
                 summaries.extend([positive, negative])
@@ -306,7 +316,7 @@ class GseaStep(BaseSystematicStep):
             if summaries:
                 summary = pd.concat(summaries, ignore_index=True)
                 summary.sort_values(
-                    group_columns + ['direction', 'FDR_qval']
+                    group_columns + ['direction', 'fdr_qval']
                 ).to_csv(self.output_dir / f"{axis}_top_{self.num_top_pathways}_pathways.csv", index=False)
 
             # Select pathways significant in at least one result.
@@ -318,7 +328,7 @@ class GseaStep(BaseSystematicStep):
             # the smallest minimum FDR instead.
             if not significant_terms:
                 significant_terms = (
-                    df.groupby("term")["FDR_qval"]
+                    df.groupby("term")["fdr_qval"]
                     .min()
                     .nsmallest(30)
                     .index.tolist()
@@ -326,7 +336,7 @@ class GseaStep(BaseSystematicStep):
 
             # Save significant results
             df[df["significant"]].sort_values(
-                group_columns + ['FDR_qval']
+                group_columns + ['fdr_qval']
             ).to_csv(self.output_dir / f"{axis}_significant_pathways.csv", index=False)
 
             log.info(f"Total rows: {len(df)}")

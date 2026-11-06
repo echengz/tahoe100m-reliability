@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import pandas as pd
 import time
+import re
 
 from pathlib import Path
 from tqdm import tqdm
@@ -216,6 +217,32 @@ class SystematicStep(BaseSystematicStep):
             self.datasets = ['tahoe100m']
 
         self.regression = regression
+
+    def summarize_influence(
+        self,
+        gene_rows: dict[str, Any],
+        n_genes_per_grouping: int = 200,
+        extra_fields: dict[str, Any] | None = None
+    ) -> pd.DataFrame:
+        influence_summary = []
+
+        for gene_id, influence in gene_rows.items():
+            row = summarize_perturbation_influence(gene_id, influence)
+            if extra_fields:
+                row.update(extra_fields)
+
+            influence_summary.append(row)
+
+        # keep top genes
+        df = pd.DataFrame(influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
+        df = df.merge(
+            self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
+            on='token_id',
+            how='left',
+            validate='many_to_one',
+        )
+
+        return df
 
     def summarize_tahoe100m_by_group(
         self,
@@ -452,6 +479,10 @@ class SystematicStep(BaseSystematicStep):
         all_influence_rows_by_moa = {}
         drug_to_moa = self.load_drug_moa_mapping()
 
+        # keep track of influence by cell_line/MOA
+        by_cell_line_moa_dir = self.output_dir / 'influence_by_cell_line_moa'
+        by_cell_line_moa_dir.mkdir(parents=True, exist_ok=True)
+
         total_conditions = 0
         total_skipped = 0
 
@@ -574,6 +605,8 @@ class SystematicStep(BaseSystematicStep):
                             )
 
             # aggregate accumulator results by cell line and MOA
+            top_genes_by_cell_line_moa = pd.DataFrame()
+
             # by cell line
             all_influence_rows_by_cell_line[cell_line_id] = acc.finalize_by_gene()
 
@@ -602,10 +635,24 @@ class SystematicStep(BaseSystematicStep):
                         else:
                             global_gene[key] += value
 
+                # save by cell line x MOA
+                cell_line_moa_df = self.summarize_influence(
+                    moa_gene_rows, extra_fields={'cell_line_id': cell_line_id, 'moa': moa}
+                )
+
+                top_genes_by_cell_line_moa = pd.concat(
+                    [top_genes_by_cell_line_moa, cell_line_moa_df], ignore_index=True
+                )
+
+            top_genes_by_cell_line_moa.to_csv(
+                by_cell_line_moa_dir / f'{mode}_{cell_line_id}_influential_genes_{cur_time}.csv',
+                index=False,
+            )
+            del top_genes_by_cell_line_moa
+
         # merge gene influence across cell lines, and also save top genes per cell line
         global_influence_rows = {}
         top_genes_by_cell_line_df = pd.DataFrame()
-        n_genes_per_grouping = 200
 
         for cell_line_id, gene_rows in all_influence_rows_by_cell_line.items():
 
@@ -630,20 +677,7 @@ class SystematicStep(BaseSystematicStep):
                         global_gene[key] += value
 
             # rank genes within this cell line
-            cell_line_influence_summary = []
-            for gene_id, influence in gene_rows.items():
-                row = summarize_perturbation_influence(gene_id, influence)
-                row['cell_line_id'] = cell_line_id
-                cell_line_influence_summary.append(row)
-            
-            # keep top genes per cell line
-            cell_line_df = pd.DataFrame(cell_line_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
-            cell_line_df = cell_line_df.merge(
-                self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
-                on='token_id',
-                how='left',
-                validate='many_to_one',
-            )
+            cell_line_df = self.summarize_influence(gene_rows, extra_fields={'cell_line_id': cell_line_id})
             
             top_genes_by_cell_line_df = pd.concat(
                 [top_genes_by_cell_line_df, cell_line_df],
@@ -653,7 +687,7 @@ class SystematicStep(BaseSystematicStep):
         del all_influence_rows_by_cell_line
 
         top_genes_by_cell_line_df.to_csv(
-            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_cell_line_id_{cur_time}.csv',
+            self.output_dir / f'systema_{mode}_top200_influential_genes_by_cell_line_id_{cur_time}.csv',
             index=False
         )
         del top_genes_by_cell_line_df
@@ -661,56 +695,26 @@ class SystematicStep(BaseSystematicStep):
         # by MOA
         top_genes_by_moa_df = pd.DataFrame()
         for moa, gene_rows in all_influence_rows_by_moa.items():
-            moa_influence_summary = []
-            for gene_id, influence in gene_rows.items():
-                row = summarize_perturbation_influence(gene_id, influence)
-                row['moa'] = moa
-                moa_influence_summary.append(row)
+            moa_df = self.summarize_influence(gene_rows, extra_fields={'moa': moa})
+            top_genes_by_moa_df = pd.concat([top_genes_by_moa_df, moa_df], ignore_index=True)
 
-            # keep top genes per MOA
-            moa_df = pd.DataFrame(moa_influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
-            moa_df = moa_df.merge(
-                self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
-                on='token_id',
-                how='left',
-                validate='many_to_one',
-            )
-
-            top_genes_by_moa_df = pd.concat(
-                [top_genes_by_moa_df, moa_df],
-                ignore_index=True,
-            )
         del all_influence_rows_by_moa
 
         top_genes_by_moa_df.to_csv(
-            self.output_dir / f'systema_{mode}_top{n_genes_per_grouping}_influential_genes_by_moa_{cur_time}.csv',
+            self.output_dir / f'systema_{mode}_top200_influential_genes_by_moa_{cur_time}.csv',
             index=False
         )
         del top_genes_by_moa_df
 
-        # Build influence summary
-        influence_summary = []
-
-        for gene_id, influence in global_influence_rows.items():
-            influence_summary.append(summarize_perturbation_influence(gene_id, influence))
-
+        # Build global influence summary
+        influence_df = self.summarize_influence(global_influence_rows, n_genes_per_grouping=1000)
         del global_influence_rows
 
-        influence_df = pd.DataFrame(influence_summary)
-        # map to gene_metadata
-        influence_df = influence_df.merge(
-            self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
-            on='token_id',
-            how='left',
-            validate='many_to_one',
-        )
-
-        # Keep the top 1000 genes by mean absolute influence
-        influence_df.nlargest(1000, 'mean_abs_influence').to_csv(
+        influence_df.to_csv(
             self.output_dir / f'systema_{mode}_top1000_influential_genes_{cur_time}.csv',
             index=False
         )
-        del influence_summary
+        del influence_df
 
         # Build DataFrames
         df = pd.DataFrame(all_rows)
