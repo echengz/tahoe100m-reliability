@@ -614,13 +614,13 @@ def plot_gsea_figures(
     """Plot GSEA results.
 
     Assumes as input the DF generated from the GSEA step, saved as
-    `shared_axis_hallmark_gsea.csv`
+    `{axis}_shared_axis_hallmark_gsea.csv`
 
     If influence DF is provided, also plots corresponding mean influence
     scores of the leading genes.
     """
     # fix Pperoxisome typo
-    gsea_df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
+    gsea_df.loc[gsea_df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
 
     # prepare matrices
     nes_matrices = prepare_nes_matrices(gsea_df, organ_by_cell_line)

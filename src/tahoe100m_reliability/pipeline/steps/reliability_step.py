@@ -143,7 +143,7 @@ def load_ctrl_to_shared_memory(
         ctrl_dense = cp10k_normalization(ctrl_dense)
 
     # Also pre-compute the mean and expr_idx for this control
-    # mean will be needed later for systema calculations
+    # mean will be needed later for calculations requiring delta_p values
     mean_expr = ctrl_dense.mean(axis=0)
 
     # if specified, subset to top expressed genes
@@ -317,7 +317,7 @@ def compute_reliability(
         task_seed,
     )
 
-    # compute delta_p for systema
+    # compute delta_p
     stim_mean = stim_dense.mean(axis=0)
     compute_results['delta_p'] = stim_mean - _WORKER_CTRL_MEAN
 
@@ -470,13 +470,13 @@ class ReliabilityStep(PipelineStep):
             # get cell line jobs
             cell_line_jobs, num_jobs_total = self.set_up_cell_line_jobs(target_cell_lines)
 
-            # systema intermediates
+            # delta_p intermediates
             if self.args.normalize_cp10k:
-                systema_dir = self.args.output_dir / 'systema_cp10k'
+                delta_p_dir = self.args.output_dir / 'delta_p_cp10k'
             else:
-                systema_dir = self.args.output_dir / 'systema'
+                delta_p_dir = self.args.output_dir / 'delta_p_raw'
 
-            systema_dir.mkdir(parents=True, exist_ok=True)
+            delta_p_dir.mkdir(parents=True, exist_ok=True)
             job_num = 0
 
             for i, (cell_line_id, jobs) in enumerate(cell_line_jobs.items()):
@@ -496,7 +496,7 @@ class ReliabilityStep(PipelineStep):
                         skipped_conditions.add(condition)
                     continue
 
-                systema_results = []
+                delta_p_results = []
 
                 # laptop cool off
                 log.info("sleeping 60 seconds to cool off")
@@ -546,8 +546,8 @@ class ReliabilityStep(PipelineStep):
                                 else:
                                     all_compute_results['split_half'].extend(compute_results['split_half'])
 
-                                    # keep systema summary
-                                    systema_results.append({
+                                    # keep delta_p summary
+                                    delta_p_results.append({
                                         'condition': condition,
                                         'n_stim_cells': compute_results['n_stim'],
                                         'delta_p': compute_results['delta_p'].astype(np.float32)
@@ -558,26 +558,26 @@ class ReliabilityStep(PipelineStep):
                                 log.error(f"Condition {condition} failed with error: {e}")
                                 skipped_conditions[condition] = f'error: {str(e)}'
 
-                    # save systema results for downstream analysis
+                    # save delta_p results for downstream analysis
                     # needs to be done across entire cell lines so cannot be done here
-                    if systema_results:
-                        systema_conditions = np.array(
-                            [x["condition"] for x in systema_results],
+                    if delta_p_results:
+                        conditions_stack = np.array(
+                            [x["condition"] for x in delta_p_results],
                             dtype=str,
                         )
 
-                        systema_n_stim = np.array(
-                            [x["n_stim_cells"] for x in systema_results],
+                        n_stim_stack = np.array(
+                            [x["n_stim_cells"] for x in delta_p_results],
                             dtype=np.int32,
                         )
 
-                        systema_delta_p = np.stack(
-                            [x["delta_p"] for x in systema_results],
+                        delta_p_stack = np.stack(
+                            [x["delta_p"] for x in delta_p_results],
                             axis=0,
                         )
 
-                        systema_cell_line_dir = systema_dir / cell_line_id
-                        systema_cell_line_dir.mkdir(parents=True, exist_ok=True)
+                        delta_p_cell_line_dir = delta_p_dir / cell_line_id
+                        delta_p_cell_line_dir.mkdir(parents=True, exist_ok=True)
 
                         if self.args.normalize_cp10k:
                             delta_p_filename = f'{cell_line_id}_CP10k_cluster{cluster}.npz'
@@ -585,10 +585,10 @@ class ReliabilityStep(PipelineStep):
                             delta_p_filename = f"{cell_line_id}_cluster{cluster}.npz" 
 
                         np.savez(
-                            systema_cell_line_dir / delta_p_filename,
-                            conditions=systema_conditions,
-                            n_stim_cells=systema_n_stim,
-                            delta_p=systema_delta_p,
+                            delta_p_cell_line_dir / delta_p_filename,
+                            conditions=conditions_stack,
+                            n_stim_cells=n_stim_stack,
+                            delta_p=delta_p_stack,
                         )
 
                 finally:

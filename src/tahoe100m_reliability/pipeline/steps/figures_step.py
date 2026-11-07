@@ -22,6 +22,7 @@ from .figures.gsea_figures import plot_gsea_figures
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
 from .figures.systematic_figures import SystematicFigures
+from .step_helpers.intermediate_loaders import load_influence_by_cell_line_moa
 from .step_helpers.pipeline_step import PipelineStep
 
 logging.basicConfig(level=logging.INFO)
@@ -73,7 +74,6 @@ class FiguresStep(PipelineStep):
             '--gsea-dir', dest='gsea_dir', type=Path,
             help='Path to GSEA step results'
         )
-
 
     def run(self) -> None:
         """Generate figures."""
@@ -127,6 +127,11 @@ class FiguresStep(PipelineStep):
             metadata["organ"] = metadata["Organ"].astype(str).str.strip()
             organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
 
+            if self.__systema_dir:
+                influence_by_cell_line_moa_dir = self.__systema_dir / 'influence_by_cell_line_moa'
+                if influence_by_cell_line_moa_dir.is_dir():
+                    influence_df = load_influence_by_cell_line_moa(influence_by_cell_line_moa_dir)
+
             for axis in ['global', 'moa']:
                 df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
 
@@ -137,7 +142,8 @@ class FiguresStep(PipelineStep):
                         gsea_output_dir,
                         "gsea_global",
                         organ_by_cell_line,
-                        "Global"
+                        "Global",
+                        influence_df=influence_df,
                     )
                 else:
                     for moa, moa_df in df.groupby("moa"):
@@ -149,5 +155,6 @@ class FiguresStep(PipelineStep):
                             gsea_output_dir,
                             f"gsea_moa_{safe_moa}" ,
                             organ_by_cell_line,
-                            moa
+                            moa,
+                            influence_df=influence_df,
                         )

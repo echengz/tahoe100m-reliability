@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from datetime import datetime
+from matplotlib.lines import Line2D
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -350,6 +351,36 @@ class SystematicFigures:
                     legend=False
                 )
 
+                # Label the most influential genes in each category
+                n_labels = 1
+
+                for category in categories:
+                    category_df = plot_df[
+                        plot_df['group'] == category
+                    ].copy()
+
+                    category_df['abs_influence'] = (
+                        category_df[influence_col].abs()
+                    )
+
+                    top_labels = category_df.nlargest(
+                        n_labels, 'abs_influence'
+                    )
+
+                    for _, row in top_labels.iterrows():
+                        x_pos = categories.index(category)
+
+                        ax.annotate(
+                            row['gene_symbol'],
+                            xy=(x_pos, row[influence_col]),
+                            xytext=(5, 5),
+                            textcoords='offset points',
+                            fontsize=7,
+                            alpha=0.9,
+                            ha='left',
+                            va='bottom'
+                        )
+
                 ax.set_title(influence_col.replace('_', ' ').title())
                 ax.set_ylabel('Influence')
                 ax.grid(axis='y', alpha=0.3)
@@ -360,14 +391,25 @@ class SystematicFigures:
             axes[-1].set_xticklabels(categories, rotation=90)
 
             # Single shared legend
-            handles, labels = axes[0].get_legend_handles_labels()
+            handles = [
+                Line2D(
+                    [0], [0],
+                    marker='o',
+                    color='w',
+                    markerfacecolor=palette[gene],
+                    markersize=7,
+                    label=gene
+                )
+                for gene in top_genes
+            ]
 
             fig.legend(
-                handles,
-                labels,
+                handles=handles,
+                labels=top_genes,
                 title='Gene',
                 bbox_to_anchor=(1.01, 0.95),
-                loc='upper left'
+                loc='upper left',
+                frameon=False
             )
 
             fig.suptitle(

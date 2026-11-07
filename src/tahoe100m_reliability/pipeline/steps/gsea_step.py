@@ -19,9 +19,9 @@ from tahoe100m_reliability.lib.tahoe100m_dataset import (
 
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
+    load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
-    load_systema_deltas,
 )
 from .step_helpers.pipeline_step import BaseSystematicStep
 
@@ -98,7 +98,7 @@ class GseaStep(BaseSystematicStep):
         super().__init__(args=args)
         self.ds_name = 'tahoe100m'
         self.num_top_pathways = args.num_top_pathways
-        self.moa_shared_axis = args.moa_shared_axis
+        self.skip_moa_shared_axis = args.skip_moa_shared_axis
 
         self.gene_metadata["token_id"] = self.gene_metadata["token_id"].astype(np.int64)
         self.id_to_symbol = dict(
@@ -118,8 +118,8 @@ class GseaStep(BaseSystematicStep):
         )
 
         parser.add_argument(
-            '--moa-shared-axis', dest='moa_shared_axis', action='store_true',
-            help='Whether or not to calculate the MOA shared axis results'
+            '--skip-moa-shared-axis', dest='skip_moa_shared_axis', action='store_true',
+            help='Whether or not to skip calculation of the MOA shared axis results'
         )
 
     def __run_gsea(
@@ -164,19 +164,26 @@ class GseaStep(BaseSystematicStep):
 
     def run(self) -> None:
         """Run the step."""
-        reliable_conds, _ = load_reliable_conditions(
-            self.ds_name, self.reliability_dir, self.clusters
-        )
-
         hallmark_sets = load_hallmark_sets()
-        drug_to_moa = self.load_drug_moa_mapping() if self.moa_shared_axis else {}
+        drug_to_moa = self.load_drug_moa_mapping() if not self.skip_moa_shared_axis else {}
 
         # track globally and by drug
         all_rows = []
         moa_rows = []
 
-        for mode, systema_dir in self.mode_mapping.items():
-            candidate_files = sorted(systema_dir.rglob("*.npz"))
+        for mode, delta_p_mode in self.mode_mapping.items():
+            reliability_dir = delta_p_mode.reliability_dir
+            delta_p_dir = delta_p_mode.delta_p_dir
+
+            if not delta_p_dir or not delta_p_dir.is_dir():
+                log.warning(f"{mode} delta_p dir not found, skipping mode")
+                continue
+
+            reliable_conds, _ = load_reliable_conditions(
+                self.ds_name, reliability_dir, self.clusters
+            )
+
+            candidate_files = sorted(delta_p_dir.rglob("*.npz"))
             cell_lines = sorted({
                 re.sub(r"_CP10K", "", re.sub(r"_cluster\d+\.npz$", "", f.name, flags=re.I), flags=re.I)
                 for f in candidate_files
@@ -184,21 +191,21 @@ class GseaStep(BaseSystematicStep):
             })
 
             log.info(f"\n[{mode}] {len(cell_lines)} cell line(s) to process")
-            for cell_line in tqdm(cell_lines, desc=f"Processing cell lines for mode {mode}"):
+            for cell_line in tqdm(cell_lines, desc=f"Processing cell lines for mode: {mode}"):
                 # Load deltas
-                systema_data = load_systema_deltas(
+                delta_p_dir = load_delta_p_results(
                     ds_name=self.ds_name,
-                    systema_dir=systema_dir,
+                    delta_p_dir=delta_p_dir,
                     target_conds=reliable_conds,  # only care about reliable conditions in this context
                     clusters=self.clusters,
                     cell_lines={cell_line},
                 )
 
-                if cell_line not in systema_data:
+                if cell_line not in delta_p_dir:
                     log.warning(f"{cell_line}: no matching NPZ files; skipping")
                     continue
 
-                data = systema_data[cell_line]
+                data = delta_p_dir[cell_line]
 
                 conditions = data["conditions"].astype(str)
                 n_stim_cells = data["n_stim_cells"]
@@ -250,7 +257,7 @@ class GseaStep(BaseSystematicStep):
 
                 # MOA-specific axis - groups reliability perturbations for a specific MOA
                 # and computes along that shared axis
-                if self.moa_shared_axis:
+                if not self.skip_moa_shared_axis:
                     moas_map = {}
                     for condition in conds:
                         parts = condition.split("|")

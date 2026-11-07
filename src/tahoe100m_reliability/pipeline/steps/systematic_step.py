@@ -17,9 +17,9 @@ from tahoe100m_reliability.lib.tahoe100m_dataset import (
 
 from .step_helpers.intermediate_loaders import (
     get_combined_split_half_reliability_df,
+    load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
-    load_systema_deltas,
     RELIABILITY_THRESH,
     SPECIFICITY_THRESH,
     REL_COL_FALLBACKS,
@@ -436,7 +436,7 @@ class SystematicStep(BaseSystematicStep):
             log.info("Saved %s summary: %s", grouping_name, out_path)
 
     def compute_systema_metrics(
-        self, ds_name: str, mode: str, systema_dir: Path, cur_time: str
+        self, ds_name: str, mode: str, delta_p_dir: Path, reliability_dir: Path, cur_time: str
     ) -> pd.DataFrame:
         """
         Compute Systema's systematic variation metric for all (context, perturbation)
@@ -455,19 +455,19 @@ class SystematicStep(BaseSystematicStep):
             frac_systematic_var
         """
         t_start = time.time()
-        log.info(f"Computing systema metrics from {systema_dir}")
+        log.info(f"Computing systema metrics from {delta_p_dir}")
 
         # ---- Load reliability (used to filter which perts define δ_avg) ----
         log.info("  [0/3] Loading reliability data for stim data...")
         reliable_conds, all_conds = load_reliable_conditions(
-            ds_name, self.reliability_dir, self.clusters
+            ds_name, reliability_dir, self.clusters
         )
 
         # ---- Load precomputed delta values for each (reliable) cell line ----
         log.info("  [1/3] Loading precomputed delta_p values for reliable data...")
-        systema_data = load_systema_deltas(
+        delta_p_data = load_delta_p_results(
             ds_name=ds_name,
-            systema_dir=systema_dir,
+            delta_p_dir=delta_p_dir,
             target_conds=all_conds,
             clusters=self.clusters
         )
@@ -487,7 +487,7 @@ class SystematicStep(BaseSystematicStep):
         total_skipped = 0
 
         for cell_line_id, data in tqdm(
-            systema_data.items(),
+            delta_p_data.items(),
             desc='Processing cell lines',
             unit='cell_line'
         ):
@@ -830,25 +830,27 @@ class SystematicStep(BaseSystematicStep):
 
     def run(self) -> None:
         """Run the full pipeline."""
-        log.info(f"Systema Systematic Variation + Reliability 2D (Cellular Context)")
-        log.info(f"  Clusters:\t{', '.join(self.clusters) if self.clusters else 'all'}")
-        log.info(f"  Reliability dir:\t{self.reliability_dir}")
-        log.info(f"  Output:\t{self.output_dir}")
+        log.info("Running Systema Systematic Variation + Reliability 2D")
 
         cur_time = time.strftime('%Y%m%d-%H%M%S')
         all_summary_rows = {}
 
         try:
-            for mode, systema_dir in self.mode_mapping.items():
-                if not systema_dir or not systema_dir.is_dir():
-                    log.warning(f"{mode} dir not found, skipping mode")
+            for mode, delta_p_mode in self.mode_mapping.items():
+                reliability_dir = delta_p_mode.reliability_dir
+                delta_p_dir = delta_p_mode.delta_p_dir
+
+                if not delta_p_dir or not delta_p_dir.is_dir():
+                    log.warning(f"{mode} delta_p dir not found, skipping mode")
                     continue
 
                 log.info(f"Evaluating {mode}")
                 all_summary_rows[mode] = []
 
                 for ds_name in self.datasets:
-                    systema_df = self.compute_systema_metrics(ds_name, mode, systema_dir, cur_time)
+                    systema_df = self.compute_systema_metrics(
+                        ds_name, mode, delta_p_dir, reliability_dir, cur_time
+                    )
 
                     # Save Systema-only results
                     systema_path = self.output_dir / f"systema_{mode}_{ds_name}_{cur_time}.csv"

@@ -130,14 +130,14 @@ def load_gene_ids(ctrl_dir: Path, cell_line_id: str) -> np.array:
     return gene_ids
 
 
-def load_systema_deltas(
+def load_delta_p_results(
     ds_name: str,
-    systema_dir: Path,
+    delta_p_dir: Path,
     target_conds: set[str],
     clusters: set[int] | None = None,
     cell_lines: set[str] | None = None
 ) -> dict[str, Any]:
-    """Load the precomputed systema deltas."""
+    """Load the precomputed delta_p results."""
     if ds_name == 'tahoe100m':
         # get all unique cell line IDs
         all_cell_line_ids = {
@@ -148,15 +148,15 @@ def load_systema_deltas(
         all_cell_line_ids = {''}
 
     # iterate over each cell line and its perturbations
-    systema_data = {}
+    delta_p_data = {}
     for cell_line_id in all_cell_line_ids:
         if cell_lines and cell_line_id not in cell_lines:
             continue
 
-        cell_line_dir = systema_dir / cell_line_id
+        cell_line_dir = delta_p_dir / cell_line_id
 
         if not cell_line_dir.exists():
-            raise FileNotFoundError(f"Cannot find systema delta data for {cell_line_id}")
+            raise FileNotFoundError(f"Cannot find delta_p data for {cell_line_id}")
 
         # accumulated condition information
         condition_accum = {}
@@ -210,10 +210,64 @@ def load_systema_deltas(
             delta_out.append(delta.astype(np.float32))
 
         del condition_accum
-        systema_data[cell_line_id] = {
+        delta_p_data[cell_line_id] = {
             "conditions": np.array(conditions_out, dtype=object),
             "n_stim_cells": np.array(n_stim_out, dtype=np.int32),
             "delta_p": np.stack(delta_out, axis=0),
         }
 
-    return systema_data
+    return delta_p_data
+
+
+def load_influence_by_cell_line_moa(influence_dir: Path) -> pd.DataFrame:
+    """Aggregate the influence by cell line x MOA results into a single DF."""
+    pattern = re.compile(
+        r'^(raw|cp10k)_(CVCL_\d+)_influential_genes_(\d{8}-\d{6})\.csv$'
+    )
+
+    files = []
+
+    for path in influence_dir.glob('*.csv'):
+        match = pattern.match(path.name)
+        if match is None:
+            continue
+
+        mode, cell_line_id, timestamp = match.groups()
+
+        files.append({
+            'path': path,
+            'mode': mode,
+            'cell_line_id': cell_line_id,
+            'timestamp': timestamp,
+        })
+
+    if not files:
+        raise FileNotFoundError(
+            f"No matching influence CSV files found in {influence_dir}"
+        )
+
+    files_df = pd.DataFrame(files)
+
+    # Select latest file for each mode and cell line
+    latest_files = (
+        files_df
+        .sort_values('timestamp')
+        .drop_duplicates(
+            ['mode', 'cell_line_id'],
+            keep='last'
+        )
+    )
+
+    # Load and combine
+    influence_dfs = []
+
+    for _, row in latest_files.iterrows():
+        df = pd.read_csv(row['path'])
+
+        df['mode'] = row['mode']
+        df['cell_line_id'] = row['cell_line_id']
+
+        influence_dfs.append(df)
+
+    influence_df = pd.concat(influence_dfs, ignore_index=True)
+    return influence_df
