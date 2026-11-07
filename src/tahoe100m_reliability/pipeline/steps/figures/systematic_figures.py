@@ -32,7 +32,7 @@ class SystematicFigures:
         self.__output_dir = output_dir
         self.__mode = mode
 
-    def __grab_latest_systema_results(self, prefix: str) -> pd.DataFrame:
+    def grab_latest_systema_results(self, prefix: str) -> pd.DataFrame:
         """Grab the latest systema results."""
         dated_pattern = re.compile(
             rf"^{re.escape(prefix)}_(\d{{8}}-\d{{6}})\.csv$"
@@ -62,7 +62,7 @@ class SystematicFigures:
 
     def plot_systematic_all(self) -> None:
         """Plot global specificity results."""
-        df = self.__grab_latest_systema_results(
+        df = self.grab_latest_systema_results(
             prefix=f'systema_{self.__mode}_cc_summary_tahoe100m'
         )
 
@@ -175,7 +175,7 @@ class SystematicFigures:
     def plot_grouped_systematic(self):
         """Plot the specificities grouped by drug, drug x dosage, and cell line ID.""" 
         for group in ['drug', 'dosage', 'drug_x_dosage', 'cell_line_id', 'moa']:
-            df = self.__grab_latest_systema_results(
+            df = self.grab_latest_systema_results(
                 prefix=f'systema_{self.__mode}_cc_reliability_2d_summary_tahoe100m_by_{group}'
             )
 
@@ -250,7 +250,7 @@ class SystematicFigures:
         Plot three vertically stacked categorical scatter plots comparing
         group-specific gene influence against global influence.
         """
-        global_df = self.__grab_latest_systema_results(
+        global_df = self.grab_latest_systema_results(
             prefix=f'systema_{self.__mode}_top1000_influential_genes'
         )
 
@@ -280,7 +280,7 @@ class SystematicFigures:
 
         for group in ['cell_line_id', 'moa']:
 
-            df = self.__grab_latest_systema_results(
+            df = self.grab_latest_systema_results(
                 prefix=f'systema_{self.__mode}_top200_influential_genes_by_{group}'
             )
 
@@ -431,8 +431,88 @@ class SystematicFigures:
             plt.close(fig)
 
     def generate_figures(self) -> None:
+        # Systematic results
         self.plot_systematic_all()
         self.plot_grouped_systematic()
 
-        # categorical scatter plots
+        # Influence results
         self.plot_top_influential_genes()
+
+
+def plot_change_in_influence(raw: SystematicFigures, cp10k: SystematicFigures, output_dir: Path):
+    """Plots the change in influence scorse before and after normalization."""
+    raw_df = raw.grab_latest_systema_results(prefix=f'systema_raw_top1000_influential_genes')
+    cp10k_df = cp10k.grab_latest_systema_results(prefix=f'systema_cp10k_top1000_influential_genes')
+
+    # Keep the influence columns and rename them
+    raw_df = raw_df[["token_id", "gene_symbol", "mean_abs_influence"]].rename(
+        columns={"mean_abs_influence": "influence_raw"}
+    )
+    cp10k_df = cp10k_df[["token_id", "mean_abs_influence"]].rename(
+        columns={"mean_abs_influence": "influence_cp10k"}
+    )
+
+    # Keep genes present in both
+    df = raw_df.merge(cp10k_df, on="token_id", how="inner")
+    del raw_df, cp10k_df
+
+    # Log axes require strictly positive values
+    plot_df = df[
+        (df["influence_raw"] > 0) &
+        (df["influence_cp10k"] > 0)
+    ].copy()
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    ax.scatter(
+        plot_df["influence_raw"],
+        plot_df["influence_cp10k"],
+        alpha=0.65,
+        s=24,
+    )
+
+    # Reference line: equal influence in both runs
+    lower = min(plot_df["influence_raw"].min(),
+                plot_df["influence_cp10k"].min())
+    upper = max(plot_df["influence_raw"].max(),
+                plot_df["influence_cp10k"].max())
+
+    ax.plot([lower, upper], [lower, upper], "--", color="gray",
+            label="Equal influence (y = x)")
+
+    # Identify top genes in each dataset, and label their union
+    n_top_genes = 7
+    top_raw = (
+        df.nlargest(n_top_genes, "influence_raw")["gene_symbol"]
+        .dropna()
+        .tolist()
+    )
+
+    top_cp10k = (
+        df.nlargest(n_top_genes, "influence_cp10k")["gene_symbol"]
+        .dropna()
+        .tolist()
+    )
+    genes_to_label = set(top_raw) | set(top_cp10k)
+
+    for _, row in plot_df[
+        plot_df["gene_symbol"].isin(genes_to_label)
+    ].iterrows():
+        ax.annotate(
+            row["gene_symbol"],
+            (row["influence_raw"], row["influence_cp10k"]),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=7,
+        )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Mean absolute influence - Raw")
+    ax.set_ylabel("Mean absolute influence - CP10K")
+    ax.set_title(f"Gene influence before vs after CP10K (n={len(plot_df)})")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.2)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight")

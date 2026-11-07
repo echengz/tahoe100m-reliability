@@ -603,6 +603,50 @@ def plot_nes_heatmap(
     plt.close(fig)
 
 
+def characterize_nes_results(df: pd.DataFrame):
+    """Characterize NES results to identify which pathways are worth looking at."""
+    df = df.copy()
+    df = df[np.isfinite(df["nes"]) & np.isfinite(df["fdr_qval"])]
+
+    sig = df[df["fdr_qval"] < FDR_THRESHOLD]
+
+    # Fraction of tested pathway-cell-line pairs that are significant
+    significant_fraction = (
+        len(sig) / len(df) if len(df) else np.nan
+    )
+
+    # How selectively pathways are enriched across cell lines
+    pathway_prevalence = (
+        sig.groupby("term")["cell_line"].nunique()
+        / df.groupby("term")["cell_line"].nunique()
+    )
+
+    pathway_specificity = (
+        (4 * pathway_prevalence * (1 - pathway_prevalence)).mean()
+        if len(pathway_prevalence) else np.nan
+    )
+
+    # Pathways with significant enrichment in both directions
+    directions = sig.assign(
+        direction=np.sign(sig["nes"])
+    ).groupby("term")["direction"].nunique()
+
+    directional_contrast = (
+        (directions > 1).sum() / len(directions)
+        if len(directions) else 0
+    )
+
+    return pd.Series({
+        "n_significant": len(sig),
+        "significant_fraction": significant_fraction,
+        "mean_abs_NES": sig["nes"].abs().mean(),
+        "n_pathways": sig["term"].nunique(),
+        "n_cell_lines": sig["cell_line"].nunique(),
+        "pathway_specificity": pathway_specificity,
+        "directional_contrast": directional_contrast,
+    })
+
+
 def plot_gsea_figures(
     gsea_df: pd.DataFrame,
     output_dir: Path,
@@ -624,6 +668,19 @@ def plot_gsea_figures(
 
     # prepare matrices
     nes_matrices = prepare_nes_matrices(gsea_df, organ_by_cell_line)
+
+    # characterize the NES results to identify interesting pathways
+    characterization = (
+        gsea_df.groupby("mode")
+        .apply(characterize_nes_results)
+        .reset_index()
+    )
+
+    characterization.insert(0, "figure", filename_prefix)
+    characterization.to_csv(
+        output_dir / f"{filename_prefix}_characterization.csv",
+        index=False
+    )
 
     if influence_df is not None:
         inf_matrices = prepare_influence_matrices(gsea_df, influence_df, nes_matrices)
@@ -667,7 +724,7 @@ def plot_gsea_figures(
             organ_by_cell_line=organ_by_cell_line,
         )
 
-        if inf_matrices:
-            plot_influence_heatmap(
-                gsea_df=gsea_df,
-            )
+        # if inf_matrices:
+        #     plot_influence_heatmap(
+        #         gsea_df=gsea_df,
+        #     )

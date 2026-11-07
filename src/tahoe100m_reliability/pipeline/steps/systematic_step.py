@@ -752,6 +752,7 @@ class SystematicStep(BaseSystematicStep):
         self,
         ds_name: str,
         systema_df: pd.DataFrame,
+        reliability_dir: Path,
     ) -> pd.DataFrame:
         """
         Merge Systema cos_sim with pre-computed split-half reliability
@@ -760,7 +761,7 @@ class SystematicStep(BaseSystematicStep):
         Merges on the 'condition' column (format: "context|perturbation").
         """
         rel_df = get_combined_split_half_reliability_df(
-            self.reliability_dir, self.clusters, summary=True, ds_name=ds_name
+            reliability_dir, self.clusters, summary=True, ds_name=ds_name
         )
         log.info(f"  Loaded reliability: {len(rel_df)} conditions")
 
@@ -858,7 +859,7 @@ class SystematicStep(BaseSystematicStep):
                     log.info(f"\n  Saved: {systema_path}")
 
                     # ---- Merge with reliability ----
-                    merged_df = self.merge_with_reliability(ds_name, systema_df)
+                    merged_df = self.merge_with_reliability(ds_name, systema_df, reliability_dir)
 
                     merged_path = self.output_dir / f"systema_{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
                     merged_df.to_csv(merged_path, index=False)

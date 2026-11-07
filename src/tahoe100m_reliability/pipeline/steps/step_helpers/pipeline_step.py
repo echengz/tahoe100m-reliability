@@ -49,8 +49,8 @@ class BaseSystematicStep(PipelineStep):
     """
     def __init__(self, args: argparse.Namespace) -> None:
         """Initializer."""
-        if not args.systema_raw_dir and not args.systema_cp10k_dir:
-            raise FileNotFoundError("At least one systema dir must be passed")
+        if not args.delta_p_raw_dir and not args.delta_p_cp10k_dir:
+            raise FileNotFoundError("At least one delta_p dir must be passed")
 
         self.mode_mapping = {
             'raw': DeltaPMode(args.reliability_raw_dir, args.delta_p_raw_dir),

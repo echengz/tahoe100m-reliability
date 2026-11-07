@@ -28,9 +28,7 @@ from .step_helpers.pipeline_step import BaseSystematicStep
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-logging.disable(logging.WARNING)
-import gseapy as gp
-
+logging.getLogger("gseapy").setLevel(logging.ERROR)
 
 FDR_THRESHOLD = 0.05
 

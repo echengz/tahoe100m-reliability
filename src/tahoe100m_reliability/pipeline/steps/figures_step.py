@@ -21,8 +21,13 @@ from tahoe100m_reliability.lib.treatment_set import TreatmentSet
 from .figures.gsea_figures import plot_gsea_figures
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
-from .figures.systematic_figures import SystematicFigures
-from .step_helpers.intermediate_loaders import load_influence_by_cell_line_moa
+from .figures.systematic_figures import (
+    SystematicFigures,
+    plot_change_in_influence,
+)
+from .step_helpers.intermediate_loaders import (
+    load_influence_by_cell_line_moa,
+)
 from .step_helpers.pipeline_step import PipelineStep
 
 logging.basicConfig(level=logging.INFO)
@@ -108,13 +113,17 @@ class FiguresStep(PipelineStep):
                 figures.generate_figures()
 
         if self.__systema_dir:
+            figures = {}
+            systema_output_dir = self.__output_dir / 'systema'
+            systema_output_dir.mkdir(parents=True, exist_ok=True)
+
             for mode in ['raw', 'cp10k']:
                 log.info(f"Generating {mode} systema figures...")
-                systema_output_dir = self.__output_dir / f'systema_{mode}'
-                systema_output_dir.mkdir(parents=True, exist_ok=True)
+                figures[mode] = SystematicFigures(self.__systema_dir, systema_output_dir, mode)
+                figures[mode].generate_figures()
 
-                figures = SystematicFigures(self.__systema_dir, systema_output_dir, mode)
-                figures.generate_figures()
+            # combined results
+            plot_change_in_influence(figures['raw'], figures['cp10k'], systema_output_dir)
 
         # Generate GSEA figures
         if self.__gsea_dir:
