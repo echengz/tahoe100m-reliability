@@ -24,13 +24,13 @@ SPECIFICITY_COLORS = {
 }
 
 
-class SystematicFigures:
+class BaseSystematicFigures:
+    """Base class for generating systematic figures."""
 
-    def __init__(self, systema_dir: Path, output_dir: Path, mode: str) -> None:
+    def __init__(self, systema_dir: Path, output_dir: Path) -> None:
         """Initializer."""
-        self.__systema_dir = systema_dir
-        self.__output_dir = output_dir
-        self.__mode = mode
+        self.systema_dir = systema_dir
+        self.output_dir = output_dir
 
     def grab_latest_systema_results(self, prefix: str) -> pd.DataFrame:
         """Grab the latest systema results."""
@@ -42,7 +42,7 @@ class SystematicFigures:
             'timestamp': None
         }
 
-        for path in self.__systema_dir.glob(f"{prefix}*.csv"):
+        for path in self.systema_dir.glob(f"{prefix}*.csv"):
             match = dated_pattern.match(path.name)
             if match:
                 timestamp = match.groups()[0]
@@ -60,10 +60,17 @@ class SystematicFigures:
         return pd.read_csv(earliest_file['path'])
 
 
+class SystematicFigures(BaseSystematicFigures):
+    """Plots systematic figures for each mode."""
+    def __init__(self, systema_dir: Path, output_dir: Path, mode: str) -> None:
+        """Initializer."""
+        super().__init__(systema_dir, output_dir)
+        self.mode = mode
+
     def plot_systematic_all(self) -> None:
         """Plot global specificity results."""
         df = self.grab_latest_systema_results(
-            prefix=f'systema_{self.__mode}_cc_summary_tahoe100m'
+            prefix=f'systema_{self.mode}_cc_summary_tahoe100m'
         )
 
         categories = ["Unreliable", "Shared", "Specific"]
@@ -101,7 +108,7 @@ class SystematicFigures:
         ax.tick_params(axis="x", rotation=0)
         plt.tight_layout()
         plt.savefig(
-            self.__output_dir / f"systema_{self.__mode}_perturbation_classification.png",
+            self.output_dir / f"systema_{self.mode}_perturbation_classification.png",
             dpi=300,
             bbox_inches="tight",
         )
@@ -167,7 +174,7 @@ class SystematicFigures:
         plt.tight_layout()
 
         plt.savefig(
-            self.__output_dir / f"systema_{self.__mode}_specificity_by_drug_x_dosage.png",
+            self.output_dir / f"systema_{self.mode}_specificity_by_drug_x_dosage.png",
             dpi=300,
             bbox_inches="tight",
         )
@@ -176,7 +183,7 @@ class SystematicFigures:
         """Plot the specificities grouped by drug, drug x dosage, and cell line ID.""" 
         for group in ['drug', 'dosage', 'drug_x_dosage', 'cell_line_id', 'moa']:
             df = self.grab_latest_systema_results(
-                prefix=f'systema_{self.__mode}_cc_reliability_2d_summary_tahoe100m_by_{group}'
+                prefix=f'systema_{self.mode}_cc_reliability_2d_summary_tahoe100m_by_{group}'
             )
 
             if df.empty:
@@ -240,7 +247,7 @@ class SystematicFigures:
 
             plt.tight_layout()
             plt.savefig(
-                self.__output_dir / f"systema_{self.__mode}_specificity_by_{group}.png",
+                self.output_dir / f"systema_{self.mode}_specificity_by_{group}.png",
                 dpi=300,
                 bbox_inches="tight",
             )
@@ -251,7 +258,7 @@ class SystematicFigures:
         group-specific gene influence against global influence.
         """
         global_df = self.grab_latest_systema_results(
-            prefix=f'systema_{self.__mode}_top1000_influential_genes'
+            prefix=f'systema_{self.mode}_top1000_influential_genes'
         )
 
         ranking_col = 'total_influence_abs'
@@ -281,7 +288,7 @@ class SystematicFigures:
         for group in ['cell_line_id', 'moa']:
 
             df = self.grab_latest_systema_results(
-                prefix=f'systema_{self.__mode}_top200_influential_genes_by_{group}'
+                prefix=f'systema_{self.mode}_top200_influential_genes_by_{group}'
             )
 
             # Only retain globally selected genes
@@ -422,8 +429,8 @@ class SystematicFigures:
             plt.tight_layout()
 
             plt.savefig(
-                self.__output_dir /
-                f"systema_{self.__mode}_influence_by_{group}.png",
+                self.output_dir /
+                f"systema_{self.mode}_influence_by_{group}.png",
                 dpi=300,
                 bbox_inches='tight'
             )
@@ -439,120 +446,152 @@ class SystematicFigures:
         self.plot_top_influential_genes()
 
 
-def plot_change_in_influence(raw: SystematicFigures, cp10k: SystematicFigures, output_dir: Path):
-    """Plots the change in influence scorse before and after normalization."""
-    raw_df = raw.grab_latest_systema_results(prefix=f'systema_raw_top1000_influential_genes')
-    cp10k_df = cp10k.grab_latest_systema_results(prefix=f'systema_cp10k_top1000_influential_genes')
+class CombinedSystematicFigures(BaseSystematicFigures):
+    """Plots combined systematic figures comparing the two modes."""
+    def __init__(self, systema_dir: Path, output_dir: Path) -> None:
+        super().__init__(systema_dir, output_dir)
+        self.__colors = {
+            'raw': 'tab:blue',
+            'cp10k': 'tab:orange',
+            'combined': 'tab:purple'
+        }
 
-    # Keep the influence columns and rename them
-    raw_df = raw_df[["token_id", "gene_symbol", "mean_abs_influence"]].rename(
-        columns={"mean_abs_influence": "influence_raw"}
-    )
-    cp10k_df = cp10k_df[["token_id", "mean_abs_influence"]].rename(
-        columns={"mean_abs_influence": "influence_cp10k"}
-    )
+    def plot_change_in_influence(self, df: pd.DataFrame, plot_df: pd.DataFrame) -> None:
+        """Plots the change in influence scorse before and after normalization."""
+        fig, ax = plt.subplots(figsize=(8, 7))
 
-    # Keep genes present in both
-    df = raw_df.merge(cp10k_df, on="token_id", how="inner")
-    del raw_df, cp10k_df
-
-    # Log axes require strictly positive values
-    plot_df = df[
-        (df["influence_raw"] > 0) &
-        (df["influence_cp10k"] > 0)
-    ].copy()
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-
-    # Reference line: equal influence in both runs
-    lower = min(plot_df["influence_raw"].min(),
-                plot_df["influence_cp10k"].min())
-    upper = max(plot_df["influence_raw"].max(),
-                plot_df["influence_cp10k"].max())
-    ax.plot([lower, upper], [lower, upper], "--", color="lightgray", alpha=0.65)
-
-    ax.scatter(
-        plot_df["influence_raw"],
-        plot_df["influence_cp10k"],
-        alpha=0.65,
-        s=24,
-        color="grey"
-    )
-
-    # Identify top genes in each dataset, and label their union
-    n_top_genes = 8
-    top_raw = set(
-        df.nlargest(n_top_genes, "influence_raw")["gene_symbol"]
-        .dropna()
-        .tolist()
-    )
-
-    top_cp10k = set(
-        df.nlargest(n_top_genes, "influence_cp10k")["gene_symbol"]
-        .dropna()
-        .tolist()
-    )
-
-    for _, row in plot_df[
-        plot_df["gene_symbol"].isin(top_raw | top_cp10k)
-    ].iterrows():
-        xytext = (4, 4)
-
-        # adjust for specific genes
-        if row["gene_symbol"] == "MT-RNR1":
-            xytext = (-30, 6)
-        elif row["gene_symbol"] in ["MT-ATP6", "FN1"]:
-            xytext = (4, 1)
-        elif row["gene_symbol"] == "IGFBP3":
-            xytext = (2, 6)
-        elif row["gene_symbol"] == "MT-CO1":
-            xytext = (4, 2)
-
-        ax.annotate(
-            row["gene_symbol"],
-            (row["influence_raw"], row["influence_cp10k"]),
-            xytext=xytext,
-            textcoords="offset points",
-            fontsize=7,
-        )
-
-    # Highlight top genes
-    for genes, color in [
-        (top_raw - top_cp10k, "blue"),
-        (top_cp10k - top_raw, "red"),
-        (top_raw & top_cp10k, "purple"),
-    ]:
-        subset = plot_df[plot_df["gene_symbol"].isin(genes)]
+        # Reference line: equal influence in both runs
+        lower = min(plot_df["mean_abs_influence_raw"].min(),
+                    plot_df["mean_abs_influence_cp10k"].min())
+        upper = max(plot_df["mean_abs_influence_raw"].max(),
+                    plot_df["mean_abs_influence_cp10k"].max())
+        ax.plot([lower, upper], [lower, upper], "--", color="lightgray", alpha=0.65)
 
         ax.scatter(
-            subset["influence_raw"],
-            subset["influence_cp10k"],
+            plot_df["mean_abs_influence_raw"],
+            plot_df["mean_abs_influence_cp10k"],
             alpha=0.65,
-            s=24, 
-            color=color,
+            s=24,
+            color="grey"
         )
 
-    legend_elements = [
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor="blue", label=f"In top {n_top_genes} for Raw", markersize=7),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor="red", label=f"In top {n_top_genes} for CP10K", markersize=7),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor="purple", label=f"In top {n_top_genes} for both", markersize=7),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor="lightgray", label="Other genes", markersize=7),
-        Line2D([0], [0], color="lightgray", linestyle="--", alpha=0.65,
-               label="Equal influence (y = x)"),
-    ]
+        # Identify top genes in each dataset, and label their union
+        n_top_genes = 8
+        top_raw = set(
+            df.nlargest(n_top_genes, "mean_abs_influence_raw")["gene_symbol"]
+            .dropna()
+            .tolist()
+        )
 
-    ax.legend(handles=legend_elements, title="Gene influence", fontsize=8)
+        top_cp10k = set(
+            df.nlargest(n_top_genes, "mean_abs_influence_cp10k")["gene_symbol"]
+            .dropna()
+            .tolist()
+        )
 
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("Mean absolute influence - Raw")
-    ax.set_ylabel("Mean absolute influence - CP10K")
-    ax.set_title(f"Gene influence before vs after CP10K (n={len(plot_df)})")
-    ax.grid(True, which="both", alpha=0.2)
+        for _, row in plot_df[
+            plot_df["gene_symbol"].isin(top_raw | top_cp10k)
+        ].iterrows():
+            xytext = (4, 4)
 
-    fig.tight_layout()
-    fig.savefig(output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight")
+            # adjust for specific genes
+            if row["gene_symbol"] == "MT-RNR1":
+                xytext = (-30, 6)
+            elif row["gene_symbol"] in ["MT-ATP6", "FN1"]:
+                xytext = (4, 1)
+            elif row["gene_symbol"] == "IGFBP3":
+                xytext = (2, 6)
+            elif row["gene_symbol"] == "MT-CO1":
+                xytext = (4, 2)
+
+            ax.annotate(
+                row["gene_symbol"],
+                (row["mean_abs_influence_raw"], row["mean_abs_influence_cp10k"]),
+                xytext=xytext,
+                textcoords="offset points",
+                fontsize=7,
+            )
+
+        # Highlight top genes
+        for genes, color in [
+            (top_raw - top_cp10k, self.__colors['raw']),
+            (top_cp10k - top_raw, self.__colors['cp10k']),
+            (top_raw & top_cp10k, self.__colors['combined']),
+        ]:
+            subset = plot_df[plot_df["gene_symbol"].isin(genes)]
+
+            ax.scatter(
+                subset["mean_abs_influence_raw"],
+                subset["mean_abs_influence_cp10k"],
+                alpha=0.65,
+                s=24, 
+                color=color,
+            )
+
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['raw'],
+                   label=f"In top {n_top_genes} for Raw",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['cp10k'],
+                   label=f"In top {n_top_genes} for CP10K",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['combined'],
+                   label=f"In top {n_top_genes} for both",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor="lightgray", label="Other genes", markersize=7),
+            Line2D([0], [0], color="lightgray", linestyle="--", alpha=0.65,
+                   label="Equal influence (y = x)"),
+        ]
+
+        ax.legend(handles=legend_elements, title="Gene influence", fontsize=8)
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("Mean absolute influence - Raw")
+        ax.set_ylabel("Mean absolute influence - CP10K")
+        ax.set_title(f"Raw vs CP10K influence of top {len(plot_df)} shared influential genes")
+        ax.grid(True, which="both", alpha=0.2)
+
+        fig.tight_layout()
+        fig.savefig(self.output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight")
+
+    def generate_figures(self) -> None:
+        # Create combined DF
+        influence_cols = [
+            "mean_abs_influence",
+            "avg_positive_influence",
+            "avg_negative_influence",
+        ]
+
+        raw_df = self.grab_latest_systema_results(
+            prefix="systema_raw_top1000_influential_genes"
+        )
+        cp10k_df = self.grab_latest_systema_results(
+            prefix="systema_cp10k_top1000_influential_genes"
+        )
+
+        raw_df = raw_df[["token_id", "gene_symbol"] + influence_cols].rename(
+            columns={col: f"{col}_raw" for col in influence_cols}
+        )
+
+        cp10k_df = cp10k_df[["token_id"] + influence_cols].rename(
+            columns={col: f"{col}_cp10k" for col in influence_cols}
+        )
+
+        df = raw_df.merge(cp10k_df, on="token_id", how="inner")
+        del raw_df, cp10k_df
+
+        # Log axes require strictly positive mean absolute influence
+        plot_df = df[
+            (df["mean_abs_influence_raw"] > 0) &
+            (df["mean_abs_influence_cp10k"] > 0)
+        ].copy()
+
+        self.plot_change_in_influence(df, plot_df)
