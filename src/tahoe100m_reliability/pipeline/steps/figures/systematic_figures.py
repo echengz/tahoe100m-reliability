@@ -464,54 +464,94 @@ def plot_change_in_influence(raw: SystematicFigures, cp10k: SystematicFigures, o
 
     fig, ax = plt.subplots(figsize=(8, 7))
 
-    ax.scatter(
-        plot_df["influence_raw"],
-        plot_df["influence_cp10k"],
-        alpha=0.65,
-        s=24,
-    )
-
     # Reference line: equal influence in both runs
     lower = min(plot_df["influence_raw"].min(),
                 plot_df["influence_cp10k"].min())
     upper = max(plot_df["influence_raw"].max(),
                 plot_df["influence_cp10k"].max())
+    ax.plot([lower, upper], [lower, upper], "--", color="lightgray", alpha=0.65)
 
-    ax.plot([lower, upper], [lower, upper], "--", color="gray",
-            label="Equal influence (y = x)")
+    ax.scatter(
+        plot_df["influence_raw"],
+        plot_df["influence_cp10k"],
+        alpha=0.65,
+        s=24,
+        color="grey"
+    )
 
     # Identify top genes in each dataset, and label their union
-    n_top_genes = 7
-    top_raw = (
+    n_top_genes = 8
+    top_raw = set(
         df.nlargest(n_top_genes, "influence_raw")["gene_symbol"]
         .dropna()
         .tolist()
     )
 
-    top_cp10k = (
+    top_cp10k = set(
         df.nlargest(n_top_genes, "influence_cp10k")["gene_symbol"]
         .dropna()
         .tolist()
     )
-    genes_to_label = set(top_raw) | set(top_cp10k)
 
     for _, row in plot_df[
-        plot_df["gene_symbol"].isin(genes_to_label)
+        plot_df["gene_symbol"].isin(top_raw | top_cp10k)
     ].iterrows():
+        xytext = (4, 4)
+
+        # adjust for specific genes
+        if row["gene_symbol"] == "MT-RNR1":
+            xytext = (-30, 6)
+        elif row["gene_symbol"] in ["MT-ATP6", "FN1"]:
+            xytext = (4, 1)
+        elif row["gene_symbol"] == "IGFBP3":
+            xytext = (2, 6)
+        elif row["gene_symbol"] == "MT-CO1":
+            xytext = (4, 2)
+
         ax.annotate(
             row["gene_symbol"],
             (row["influence_raw"], row["influence_cp10k"]),
-            xytext=(4, 4),
+            xytext=xytext,
             textcoords="offset points",
             fontsize=7,
         )
+
+    # Highlight top genes
+    for genes, color in [
+        (top_raw - top_cp10k, "blue"),
+        (top_cp10k - top_raw, "red"),
+        (top_raw & top_cp10k, "purple"),
+    ]:
+        subset = plot_df[plot_df["gene_symbol"].isin(genes)]
+
+        ax.scatter(
+            subset["influence_raw"],
+            subset["influence_cp10k"],
+            alpha=0.65,
+            s=24, 
+            color=color,
+        )
+
+    legend_elements = [
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor="blue", label=f"In top {n_top_genes} for Raw", markersize=7),
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor="red", label=f"In top {n_top_genes} for CP10K", markersize=7),
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor="purple", label=f"In top {n_top_genes} for both", markersize=7),
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor="lightgray", label="Other genes", markersize=7),
+        Line2D([0], [0], color="lightgray", linestyle="--", alpha=0.65,
+               label="Equal influence (y = x)"),
+    ]
+
+    ax.legend(handles=legend_elements, title="Gene influence", fontsize=8)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Mean absolute influence - Raw")
     ax.set_ylabel("Mean absolute influence - CP10K")
     ax.set_title(f"Gene influence before vs after CP10K (n={len(plot_df)})")
-    ax.legend()
     ax.grid(True, which="both", alpha=0.2)
 
     fig.tight_layout()
