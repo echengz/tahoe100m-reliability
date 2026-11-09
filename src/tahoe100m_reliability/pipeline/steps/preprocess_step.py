@@ -6,15 +6,14 @@ import ast
 import logging
 from pathlib import Path
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import (
+from tahoe100m_reliability.lib.ingest.hg_duckdb_query import batch_duckdb_query
+from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
     get_cell_line_metadata,
     get_sample_metadata,
     list_tahoe100m_parquet_files,
 )
-from tahoe100m_reliability.lib.hg_duckdb_query import batch_duckdb_query
-from tahoe100m_reliability.lib.treatment_set import TreatmentSet
-
-from .step_helpers.pipeline_step import PipelineStep
+from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
+from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
 
 log = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ from pathlib import Path
 from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, fcluster
 
-from tahoe100m_reliability.lib.treatment_set import TreatmentSet
+from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)

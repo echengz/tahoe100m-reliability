@@ -16,11 +16,6 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
-# Fixed n_half values for the scaling curve.
-# Original 7-point grid (powers of 2). n_total = 2 * n_half spans 16-1024.
-DEFAULT_N_HALF_GRID = [8, 16, 32, 64, 128, 256, 512]
-
-
 def log_memory_usage(msg: str = None):
     # Get the ID of the current process
     process = psutil.Process(os.getpid())

@@ -17,18 +17,15 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Any
 
-from tahoe100m_reliability.lib.hg_duckdb_query import batch_duckdb_query
-from tahoe100m_reliability.lib.treatment_set import TreatmentSet
-
-from .step_helpers.compute_reliability import (
-    DEFAULT_N_HALF_GRID,
+from tahoe100m_reliability.lib.analysis.compute_reliability import (
     compute_split_half_reliability,
     cp10k_normalization,
     log_memory_usage,
-    summarize_edist_results,
-    summarize_split_half_results,
 )
-from .step_helpers.pipeline_step import PipelineStep
+
+from tahoe100m_reliability.lib.ingest.hg_duckdb_query import batch_duckdb_query
+from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
+from tahoe100m_reliability.lib.step import BaseReliabilityStep
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -325,7 +322,7 @@ def compute_reliability(
     return compute_results, dropped_genes
 
 
-class ReliabilityStep(PipelineStep):
+class ReliabilityStep(BaseReliabilityStep):
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize reliability step."""
@@ -445,16 +442,13 @@ class ReliabilityStep(PipelineStep):
         cluster: str,
         treatments: list[TreatmentSet],
         target_cell_lines: set[str],
-        n_half_grid: list[int],
         remove_genes: set[int] | None = None,
     ) -> None:
         """Process and compute reliability results for the given treatment cluster."""
         log.info(f"Processing cluster {cluster} with {len(treatments)} treatments")
         t_start = time.time()
 
-        all_compute_results = {
-            'split_half': [],
-        }
+        all_compute_results = {'split_half': []}
         all_dropped_genes = {}
         skipped_conditions = {}
 
@@ -469,14 +463,6 @@ class ReliabilityStep(PipelineStep):
 
             # get cell line jobs
             cell_line_jobs, num_jobs_total = self.set_up_cell_line_jobs(target_cell_lines)
-
-            # delta_p intermediates
-            if self.args.normalize_cp10k:
-                delta_p_dir = self.args.output_dir / 'delta_p_cp10k'
-            else:
-                delta_p_dir = self.args.output_dir / 'delta_p_raw'
-
-            delta_p_dir.mkdir(parents=True, exist_ok=True)
             job_num = 0
 
             for i, (cell_line_id, jobs) in enumerate(cell_line_jobs.items()):
@@ -498,9 +484,10 @@ class ReliabilityStep(PipelineStep):
 
                 delta_p_results = []
 
-                # laptop cool off
-                log.info("sleeping 60 seconds to cool off")
-                time.sleep(60)
+                # cool off
+                if self.args.cell_line_cooldown > 0:
+                    log.info(f"sleeping {self.args.cell_line_cooldown} seconds to cool off")
+                    time.sleep(self.args.cell_line_cooldown)
 
                 try:
                     # Execute contexts in parallel
@@ -524,7 +511,7 @@ class ReliabilityStep(PipelineStep):
                                 condition=condition,
                                 cell_line_dirs=cell_line_dirs,
                                 task_seed=task_seed,
-                                n_half_grid=n_half_grid,
+                                n_half_grid=self.n_half_grid,
                                 n_repeats=self.args.n_repeats,
                                 delete_stim_data=self.args.stim_data_dir is None,
                                 normalize_cp10k=self.args.normalize_cp10k
@@ -561,34 +548,15 @@ class ReliabilityStep(PipelineStep):
                     # save delta_p results for downstream analysis
                     # needs to be done across entire cell lines so cannot be done here
                     if delta_p_results:
-                        conditions_stack = np.array(
-                            [x["condition"] for x in delta_p_results],
-                            dtype=str,
-                        )
-
-                        n_stim_stack = np.array(
-                            [x["n_stim_cells"] for x in delta_p_results],
-                            dtype=np.int32,
-                        )
-
-                        delta_p_stack = np.stack(
-                            [x["delta_p"] for x in delta_p_results],
-                            axis=0,
-                        )
-
-                        delta_p_cell_line_dir = delta_p_dir / cell_line_id
-                        delta_p_cell_line_dir.mkdir(parents=True, exist_ok=True)
-
                         if self.args.normalize_cp10k:
-                            delta_p_filename = f'{cell_line_id}_CP10k_cluster{cluster}.npz'
+                            delta_p_filename = f'{cell_line_id}_CP10K_delta_p_cluster{cluster}.npz'
                         else:
-                            delta_p_filename = f"{cell_line_id}_cluster{cluster}.npz" 
+                            delta_p_filename = f"{cell_line_id}_delta_p_cluster{cluster}.npz" 
 
-                        np.savez(
-                            delta_p_cell_line_dir / delta_p_filename,
-                            conditions=conditions_stack,
-                            n_stim_cells=n_stim_stack,
-                            delta_p=delta_p_stack,
+                        self.save_delta_p_results(
+                            delta_p_results=delta_p_results,
+                            outfile=delta_p_filename,
+                            group = cell_line_id,
                         )
 
                 finally:
@@ -596,11 +564,10 @@ class ReliabilityStep(PipelineStep):
                     shared_ctrl['shm'].unlink()
 
         # summarize reliability results
-        summarize_split_half_results(
+        self.summarize_split_half_results(
             cluster=cluster,
             all_rows=all_compute_results['split_half'],
-            expr_k=self.args.expr_k,
-            output_dir=self.args.output_dir,
+            dataset_name='tahoe100m',
         )
 
         # write out dropped genes
@@ -640,10 +607,6 @@ class ReliabilityStep(PipelineStep):
                 + 'cell lines, each an individual parquet file.'
         )
         parser.add_argument(
-            '-o', '--output-dir', dest='output_dir', required=True, type=Path,
-            help='Output directory to write results to'
-        )
-        parser.add_argument(
             '-d', '--drug-dosages-csv', dest='drug_dosages_csv', required=True, type=Path,
             help='Path to a CSV file listing all the drug x dosage combinations with their cluster index.'
         )
@@ -661,31 +624,6 @@ class ReliabilityStep(PipelineStep):
         )
 
         parser.add_argument(
-            '--n-repeats', dest='n_repeats', type=int, default=100,
-            help='Split-half repetitions (default: 100)'
-           )
-        parser.add_argument(
-            '--expr-k', dest='expr_k', type=int, default=1000,
-            help='Number of top expressed genes to restrict to (set to -1 for None)'
-                + '(Ahlmann-Eltze approach; default: 1000)'
-        )
-        parser.add_argument(
-            '--workers', dest='workers', type=int, default=1,
-            help='Parallel workers to use (default: 1)'
-        )
-        parser.add_argument(
-            '--seed', dest='seed', type=int, default=42,
-            help='Random seed (default: 42)'
-        )
-
-        n_half_default = ",".join(str(n) for n in DEFAULT_N_HALF_GRID)
-        parser.add_argument(
-            "--n-half-grid", dest="n_half_grid", type=str, default=n_half_default,
-            help="Comma-separated fractions of stimulated cells per split half "
-                + f"for the fixed-n curve. Default: {n_half_default}.",
-        )
-
-        parser.add_argument(
             "--stim-data-dir", dest="stim_data_dir", type=Path, required=False,
             help="If provided, will save downloaded stim data to this directory rather than a temporary one",
         )
@@ -696,18 +634,17 @@ class ReliabilityStep(PipelineStep):
         )
 
         parser.add_argument(
-            '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
-            help='Whether or not to run normalize the gene transcription counts with CP10K'
+            '--cell-line-cooldown', dest='cell_line_cooldown', type= int, required=False, default=30,
+            help='Time in seconds to sleep between processing each cell line. Set to 0 to disable.'
         )
-
         parser.add_argument(
             '--skip-localization', dest='skip_localization', action='store_true',
             help='Skip localization if data already lives under a passed stim-data-dir'
         )
+        super().add_cli_args(parser)
 
     def run(self) -> None:
         """Run the full pipeline."""
-        n_half_grid = sorted({int(x.strip()) for x in self.args.n_half_grid.split(",") if x.strip()})
         remove_genes = set([x.strip() for x in self.args.remove_genes.split(',')]) \
             if self.args.remove_genes else None
 
@@ -737,6 +674,5 @@ class ReliabilityStep(PipelineStep):
                 cluster=cluster,
                 treatments=treatments,
                 target_cell_lines=target_cell_lines,
-                n_half_grid=n_half_grid,
                 remove_genes=remove_genes,
             )

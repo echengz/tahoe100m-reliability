@@ -11,11 +11,11 @@ import re
 from pathlib import Path
 from tqdm import tqdm
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import (
-    get_drug_metadata,
+from tahoe100m_reliability.lib.analysis.influence_accumulator import (
+    InfluenceAccumulator,
+    summarize_perturbation_influence,
 )
-
-from .step_helpers.intermediate_loaders import (
+from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
     get_combined_split_half_reliability_df,
     load_delta_p_results,
     load_gene_ids,
@@ -24,11 +24,11 @@ from .step_helpers.intermediate_loaders import (
     SPECIFICITY_THRESH,
     REL_COL_FALLBACKS,
 )
-from .step_helpers.influence_accumulator import (
-    InfluenceAccumulator,
-    summarize_perturbation_influence,
+from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
+    get_drug_metadata,
 )
-from .step_helpers.pipeline_step import BaseSystematicStep
+
+from tahoe100m_reliability.lib.step.base_systematic_step import BaseSystematicStep
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -858,7 +858,7 @@ class SystematicStep(BaseSystematicStep):
                     systema_df.to_csv(systema_path, index=False)
                     log.info(f"\n  Saved: {systema_path}")
 
-                    # ---- Merge with reliability ----
+                    # Merge with reliability
                     merged_df = self.merge_with_reliability(ds_name, systema_df, reliability_dir)
 
                     merged_path = self.output_dir / f"systema_{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
@@ -868,7 +868,7 @@ class SystematicStep(BaseSystematicStep):
                     if ds_name == 'tahoe100m':
                         self.summarize_tahoe100m_by_group(mode, merged_df, cur_time)
 
-                    # ---- Cross-dataset summary row ----
+                    # Cross-dataset summary row
                     summary_row = {
                         "n_conditions": len(systema_df),
                         "n_contexts": systema_df["context"].nunique(),

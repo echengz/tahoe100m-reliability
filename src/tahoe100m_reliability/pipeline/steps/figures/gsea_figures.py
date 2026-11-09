@@ -11,7 +11,7 @@ from matplotlib.colors import TwoSlopeNorm
 from matplotlib.cm import ScalarMappable
 from matplotlib.collections import PolyCollection
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import (
+from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
     get_cell_line_metadata,
 )
 

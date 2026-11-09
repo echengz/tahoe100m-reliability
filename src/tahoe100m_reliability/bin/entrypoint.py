@@ -7,7 +7,6 @@ import argparse
 
 from tahoe100m_reliability.pipeline import (
     Tahoe100mPipelineRunner,
-    RegressionPipelineRunner,
 )
 from tahoe100m_reliability.pipeline.steps import (
     FiguresStep,
@@ -15,6 +14,14 @@ from tahoe100m_reliability.pipeline.steps import (
     PreprocessStep,
     ReliabilityStep,
     SystematicStep,
+)
+
+from tahoe100m_reliability.regression import (
+    RegressionPipelineRunner,
+)
+from tahoe100m_reliability.regression.steps import (
+    RegressionReliabilityStep,
+    RegressionSystematicStep,
 )
 
 
@@ -36,13 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
         help='Run the full pipeline'
     )
     Tahoe100mPipelineRunner.add_cli_args(all_parser)
-
-    # REGRESSION PIPELINE
-    all_parser = subparsers.add_parser(
-        'regression',
-        help='Run the regression pipeline on the original 29 datasets'
-    )
-    RegressionPipelineRunner.add_cli_args(all_parser)
 
     # PREPROCESS STEP
     preprocess_parser = subparsers.add_parser(
@@ -79,6 +79,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     FiguresStep.add_cli_args(figures_parser)
 
+    # REGRESSION PIPELINE
+    regression_parser = subparsers.add_parser(
+        'regression',
+        help='Run the regression pipeline on the original 29 datasets'
+    )
+    RegressionPipelineRunner.add_cli_args(regression_parser)
+
+    # REGRESSION RELIABILITY
+    regression_reliability_parser = subparsers.add_parser(
+        'r-reliability',
+        help='Run the regression reliability step on the original 29 datasets'
+    )
+    RegressionReliabilityStep.add_cli_args(regression_reliability_parser)
+
+    # REGRESSION_SYSTEMATIC
+    regression_systematic_step = subparsers.add_parser(
+        'r-systematic',
+        help='Run the regression systematic step on the original 29 datasets'
+    )
+    RegressionSystematicStep.add_cli_args(regression_systematic_step)
+
     return parser
 
 
@@ -89,12 +110,14 @@ def main() -> None:
 
     runner_map = {
         'all': Tahoe100mPipelineRunner,
-        'regression': RegressionPipelineRunner,
         'preprocess': PreprocessStep,
         'reliability': ReliabilityStep,
         'systematic': SystematicStep,
         'gsea': GseaStep,
         'figures': FiguresStep,
+        'regression': RegressionPipelineRunner,
+        'r-reliability': RegressionReliabilityStep,
+        'r-systematic': RegressionSystematicStep
     }
 
     runner = runner_map.get(args.command)

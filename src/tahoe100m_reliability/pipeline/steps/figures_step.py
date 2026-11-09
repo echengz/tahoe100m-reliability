@@ -12,23 +12,24 @@ import re
 
 from pathlib import Path
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import (
+from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
+    load_influence_by_cell_line_moa,
+)
+from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
     get_cell_line_metadata,
     get_drug_metadata,
 )
-from tahoe100m_reliability.lib.treatment_set import TreatmentSet
+from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
+from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
 from .figures.gsea_figures import plot_gsea_figures
+from .figures.gsea_pycirclize import plot_moa_group_circos
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
 from .figures.systematic_figures import (
     CombinedSystematicFigures,
     SystematicFigures,
 )
-from .step_helpers.intermediate_loaders import (
-    load_influence_by_cell_line_moa,
-)
-from .step_helpers.pipeline_step import PipelineStep
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -102,14 +103,14 @@ class FiguresStep(PipelineStep):
             'raw': self.__reliability_raw_dir,
             'cp10k': self.__reliability_cp10k_dir
         }
+        reliability_output_dir = self.__output_dir / 'reliability'
 
         for mode, rel_dir in rel_map.items():
             if rel_dir:
                 log.info(f"Generating {mode} reliability figures...")
-                reliability_output_dir = self.__output_dir / f'reliability_{mode}'
                 reliability_output_dir.mkdir(parents=True, exist_ok=True)
 
-                figures = ReliabilityFigures(rel_dir, reliability_output_dir)
+                figures = ReliabilityFigures(rel_dir, reliability_output_dir, mode)
                 figures.generate_figures()
 
         # Generate systematic figures
@@ -147,24 +148,58 @@ class FiguresStep(PipelineStep):
 
                 if axis == 'global':
                     log.info("Plotting global axis")
-                    plot_gsea_figures(
-                        df,
-                        gsea_output_dir,
-                        "gsea_global",
-                        organ_by_cell_line,
-                        "Global",
-                        influence_df=influence_df,
-                    )
+                    # plot_gsea_figures(
+                    #     df,
+                    #     gsea_output_dir,
+                    #     "gsea_global",
+                    #     organ_by_cell_line,
+                    #     "Global",
+                    #     influence_df=influence_df,
+                    # )
+                    # plot_moa_group_circos(
+
+                    # )
+
                 else:
-                    for moa, moa_df in df.groupby("moa"):
-                        # Make directory name filesystem-safe
-                        safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
-                        log.info(f"Plotting MOA axis: {moa}")
-                        plot_gsea_figures(
-                            moa_df,
-                            gsea_output_dir,
-                            f"gsea_moa_{safe_moa}" ,
-                            organ_by_cell_line,
-                            moa,
-                            influence_df=influence_df,
-                        )
+                    moa_groupings = {
+                        "RTK-RAS-MAPK signalling": [
+                            "EGFR/ERBB inhibitor",
+                            "Multi-TK inhibitor",
+                            "Other TK inhibitor",
+                            "RAS inhibitor",
+                            "RAF inhibitor",
+                            "MEK inhibitor",
+                            "Other MAPK inhibitor"
+                        ]
+                    }
+
+                    selected_moas = [
+                        "EGFR/ERBB inhibitor",
+                        "Multi-TK inhibitor",
+                        "Other TK inhibitor",
+                        "RAS inhibitor",
+                        "RAF inhibitor",
+                        "MEK inhibitor",
+                        "Other MAPK inhibitor"
+                    ]
+
+                    plot_moa_group_circos(
+                        gsea_df=df[~df["moa"].isin(['unclear'])].copy(),
+                        output_dir=gsea_output_dir,
+                        filename_prefix="gsea_pycirclize_by_moa",
+                        organ_by_cell_line=organ_by_cell_line,
+                        sector_gap=1
+                    )
+
+                    # for moa, moa_df in df.groupby("moa"):
+                    #     # Make directory name filesystem-safe
+                    #     safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
+                    #     log.info(f"Plotting MOA axis: {moa}")
+                    #     plot_gsea_figures(
+                    #         moa_df,
+                    #         gsea_output_dir,
+                    #         f"gsea_moa_{safe_moa}" ,
+                    #         organ_by_cell_line,
+                    #         moa,
+                    #         influence_df=influence_df,
+                    #     )

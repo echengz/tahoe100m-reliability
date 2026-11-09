@@ -9,18 +9,19 @@ import textwrap
 
 from pathlib import Path
 
-from ..step_helpers.compute_reliability import DEFAULT_N_HALF_GRID
-from ..step_helpers.intermediate_loaders import get_combined_split_half_reliability_df
+from tahoe100m_reliability.lib.step.base_reliability_step import DEFAULT_N_HALF_GRID
+from tahoe100m_reliability.lib.ingest.intermediate_loaders import get_combined_split_half_reliability_df
 
 log = logging.getLogger(__name__)
 
 
 class ReliabilityFigures:
 
-    def __init__(self, reliability_dir: Path, output_dir: Path) -> None:
+    def __init__(self, reliability_dir: Path, output_dir: Path, mode: str) -> None:
         """Initializer."""
         self.__reliability_dir = reliability_dir
         self.__output_dir = output_dir
+        self.__mode = mode
 
     def __plot_reliability_heatmap(
         self,
@@ -104,7 +105,8 @@ class ReliabilityFigures:
                 [str(s) for s in DEFAULT_N_HALF_GRID]
                 + [
                     f"Max available\n"
-                    f"({n_stim.min():.0f} – {n_stim.max():.0f} cells)"
+                    f"Mean: {n_stim.mean() // 2}\n"
+                    f"Median: {n_stim.median() // 2}"
                 ]
             )
         else:
@@ -144,7 +146,7 @@ class ReliabilityFigures:
                 ax.set_yticklabels(heat.index, fontsize=7)
                 ax.set_ylabel(y_label, labelpad=25)
 
-        ax.set_xlabel("Cells per half (fixed sizes) and maximum available", labelpad=15)
+        ax.set_xlabel("Cells per half (fixed sizes)", labelpad=15)
         ax.set_title(title, pad=35)
 
         cbar = fig.colorbar(im, ax=ax)
@@ -212,7 +214,7 @@ class ReliabilityFigures:
         ax.grid(alpha=0.25)
         ax.legend()
         plt.tight_layout()
-        plt.savefig(self.__output_dir / f'reliability_by_sample_size_quartiles_{gene_mode}.png')
+        plt.savefig(self.__output_dir / f'reliability_{self.__mode}_by_sample_size_quartiles_{gene_mode}.png')
 
         # --- HEATMAP ---
         heat_data = (
@@ -283,7 +285,7 @@ class ReliabilityFigures:
             heat_data,
             heat,
             title=f"Split-half reliability across {heat.shape[0]} conditions (cell line x drug x dosage)",
-            outfile_name=f"reliability_by_sample_size_heatmap_{gene_mode}.png"
+            outfile_name=f"reliability_{self.__mode}_by_sample_size_heatmap_{gene_mode}.png"
         )
 
         # also plot the bottom 20 reliable drugs. pick bottom 20 from
@@ -298,7 +300,7 @@ class ReliabilityFigures:
                 heat_data,
                 heat_bottom20,
                 title=f'Split-half reproducibility across bottom {bottom_n}-scoring conditions for fixed size {fixed_size}',
-                outfile_name=f"reliability_by_sample_size_heatmap_fixed_size_{fixed_size}_bottom_20_{gene_mode}.png",
+                outfile_name=f"reliability_{self.__mode}_by_sample_size_heatmap_fixed_size_{fixed_size}_bottom_20_{gene_mode}.png",
                 figsize=(10, 7),
                 n_label=20,
             )
@@ -357,7 +359,7 @@ class ReliabilityFigures:
             drug_heat_data,
             drug_heat,
             title=f'Split-half reproducibility across {drug_heat.shape[0]} drugs',
-            outfile_name=f"reliability_heatmap_by_drug_{gene_mode}.png",
+            outfile_name=f"reliability_{self.__mode}_heatmap_by_drug_{gene_mode}.png",
             y_label='Drugs, ordered by total sample size',
         )
 
@@ -421,7 +423,7 @@ class ReliabilityFigures:
             cell_line_heat_data,
             cell_line_heat,
             title=f"Split-half reproducibility across {cell_line_heat.shape[0]} cell lines",
-            outfile_name=f"reliability_heatmap_by_cell_line_{gene_mode}.png",
+            outfile_name=f"reliability_{self.__mode}_heatmap_by_cell_line_{gene_mode}.png",
             n_label=len(cell_line_heat),
             y_label="Cell lines, ordered by total sample size",
             count_max_available=False

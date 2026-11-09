@@ -4,7 +4,7 @@ Accumulator for the systematic step to accumulate influence scores.
 import numpy as np
 from typing import Any
 
-from .intermediate_loaders import SPECIFICITY_THRESH
+SPECIFICITY_THRESH = 0.5
 
 
 class InfluenceAccumulator:

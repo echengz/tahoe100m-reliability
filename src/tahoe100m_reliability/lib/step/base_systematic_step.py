@@ -1,31 +1,16 @@
 """
-Base class to handle a step of the pipeline.
+Base systematic step, to be used by both
+Tahoe100M and Regression pipelines.
 """
 import argparse
 
 from pathlib import Path
 
-from tahoe100m_reliability.lib.tahoe100m_dataset import (
+from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
     get_drug_metadata,
     get_gene_metadata
 )
-
-
-class PipelineStep:
-    """Base pipeline step."""
-
-    def __init__(self, args: argparse.Namespace) -> None:
-        """Initialize the step."""
-        pass
-
-    def run(self) -> None:
-        """Run the step."""
-        pass
-
-    @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for this pipeline step to the given parser."""
-        pass
+from .pipeline_step import PipelineStep
 
 
 class DeltaPMode:
@@ -98,7 +83,7 @@ class BaseSystematicStep(PipelineStep):
         )
 
         parser.add_argument(
-            '-o', '--output-dir', dest='output_dir', required=True, type=Path,
+            '--output-dir', dest='output_dir', required=True, type=Path,
             help='Output directory to write results to'
         )
 
@@ -113,9 +98,7 @@ class BaseSystematicStep(PipelineStep):
         """Load drug-to-fine-MOA annotations from Tahoe100M."""
         drug_metadata = get_drug_metadata(to_pandas=True)
         metadata = drug_metadata[["drug", "moa-fine"]]
-        metadata["drug"] = (
-            metadata["drug"].astype(str).str.strip()
-        )
+        metadata["drug"] = (metadata["drug"].astype(str).str.strip())
 
         # Remove duplicate drug annotations
         metadata = metadata.drop_duplicates(subset=["drug"])

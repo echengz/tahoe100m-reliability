@@ -1,11 +1,3 @@
-"""
-Runs the regression pipeline on the original 29 datasets to ensure
-results are still aligned with the original framework.
-"""
-import argparse
-
-from .steps.step_helpers.pipeline_step import PipelineStep
-
 # ============================================================
 # DATASET CONFIGURATION — Wei et al. Cellular Context
 # ============================================================
@@ -105,8 +97,23 @@ CELLULAR_DATASETS = {
 }
 
 
-class RegressionPipelineRunner(PipelineStep):
+# Common alternative names to try during auto-discovery
+CONTEXT_COL_CANDIDATES = [
+    "cell_type", "celltype", "cell_line", "cellLine", "cell_line_id",
+    "patient", "donor", "species", "sample", "batch",
+    "outSample", "outsample",
+]
 
-    def run(self, args: argparse.Namespace) -> None:
-        """Run the full pipeline."""
-        print("not yet implemented")
+
+CONDITION_COL_CANDIDATES = [
+    "condition", "perturbation", "treatment", "stim", "stimulation",
+    "drug", "compound", "perturb",
+]
+
+
+CTRL_LABEL_CANDIDATES = [
+    "control", "Control", "ctrl", "CTRL",
+    "DMSO", "dmso", "Vehicle", "vehicle",
+    "Uninfected", "uninfected", "untreated", "Untreated",
+    "normal", "Normal", "baseline", "Baseline",
+]
