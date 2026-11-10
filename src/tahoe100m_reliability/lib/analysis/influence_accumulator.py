@@ -2,6 +2,9 @@
 Accumulator for the systematic step to accumulate influence scores.
 """
 import numpy as np
+import pandas as pd
+
+from pathlib import Path
 from typing import Any
 
 SPECIFICITY_THRESH = 0.5
@@ -168,3 +171,85 @@ def summarize_perturbation_influence(gene_id: str, influence):
         'num_upregulated': influence['num_upregulated'],
         'num_downregulated': influence['num_downregulated']
     }
+
+
+class GSEAInfluenceAnnotator:
+    """Class to handle adding influence scores to GSEA results."""
+    def __init__(self, file: Path, moa_targets: list[str, Any] | None = None) -> None:
+        self.__gsea_axis = pd.read_csv(file)
+
+        # assert cell_line_id and normalization mode are in the df
+        for required_field in ['cell_line', 'mode']:
+            assert required_field in self.__gsea_axis.columns, \
+                f"Missing required column {required_field} in gsea_axis data"
+
+        # add MOA targets, if provided, same format as lead_genes
+        if moa_targets is not None:
+            self.__gsea_axis['moa_target_genes'] = (
+                self.__gsea_axis['moa']
+                .map(moa_targets)
+                .apply(lambda genes: ';'.join(genes) if isinstance(genes, list) else pd.NA)
+            )
+
+    def add_influence_score_to_lead_genes(
+        self, influence_lookup: dict[str, Any], lead_genes: str
+    ) -> str:
+        """Add influence score to lead genes. Assumes influence_scores and lead_genes
+        are associated with the same context (e.g. cell line or MOA grouping).
+
+        In the GSEA output, the lead_genes column is a ; separated list of genes
+
+        Returns a ; separated list of 
+            gene:mean_abs_inf:mean_pos_inf,mean_neg_inf:rank
+        """
+        updated_genes = []
+
+        for gene in lead_genes.split(';'):
+            gene = gene.strip()
+
+            if not gene:
+                continue
+
+            influence = influence_lookup.get(gene)
+
+            if influence is None:
+                updated_genes.append(f'{gene}:NA:NA:NA:NA')
+                continue
+
+            updated_genes.append(
+                f'{gene}:'
+                f'{influence["mean_abs_influence"]}:'
+                f'{influence["avg_positive_influence"]}:'
+                f'{influence["avg_negative_influence"]}:'
+                f'{influence["influence_rank"]}'
+            )
+
+        return ';'.join(updated_genes)
+
+    def update_lead_genes(
+        self,
+        influence_lookup: dict[str, Any],
+        normalization_mode: str,
+        cell_line_id: str,
+        moa: str | None = None,
+    ) -> None:
+        mask = self.__gsea_axis['mode'] == normalization_mode
+        mask &= self.__gsea_axis['cell_line'] == cell_line_id
+
+        if moa is not None:
+            mask &= self.__gsea_axis['moa'] == moa
+
+        for column in ['lead_genes', 'moa_target_genes']:
+            if column not in self.__gsea_axis.columns:
+                continue
+
+            self.__gsea_axis.loc[mask, column] = (
+                self.__gsea_axis.loc[mask, column].apply(
+                    lambda genes: self.add_influence_score_to_lead_genes(
+                        influence_lookup, genes
+                    ) if pd.notna(genes) else genes
+                )
+            )
+
+    def to_csv(self, outfile: Path) -> None:
+        self.__gsea_axis.to_csv(outfile, index=False)

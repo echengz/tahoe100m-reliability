@@ -556,7 +556,7 @@ class ReliabilityStep(BaseReliabilityStep):
                         self.save_delta_p_results(
                             delta_p_results=delta_p_results,
                             outfile=delta_p_filename,
-                            group = cell_line_id,
+                            group=cell_line_id,
                         )
 
                 finally:

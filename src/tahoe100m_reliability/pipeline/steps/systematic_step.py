@@ -1,5 +1,5 @@
 """
-Runs step 2 of the pipeline: systematic.
+Runs step 3 of the pipeline: systematic.
 """
 import argparse
 import logging
@@ -12,6 +12,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from tahoe100m_reliability.lib.analysis.influence_accumulator import (
+    GSEAInfluenceAnnotator,
     InfluenceAccumulator,
     summarize_perturbation_influence,
 )
@@ -218,12 +219,30 @@ class SystematicStep(BaseSystematicStep):
 
         self.regression = regression
 
+        # load GSEA results, if provided
+        self.gsea_global_axis, self.gsea_moa_axis = None, None
+
+        if args.gsea_global_shared_axis_hallmark:
+            self.gsea_global_axis = GSEAInfluenceAnnotator(
+                args.gsea_global_shared_axis_hallmark
+            )
+        if args.gsea_moa_shared_axis_hallmark:
+            self.gsea_moa_axis = GSEAInfluenceAnnotator(
+                args.gsea_moa_shared_axis_hallmark, moa_targets=self.load_moa_targets()
+            )
+
     def summarize_influence(
         self,
         gene_rows: dict[str, Any],
         n_genes_per_grouping: int = 200,
-        extra_fields: dict[str, Any] | None = None
+        extra_fields: dict[str, Any] | None = None,
+        normalization_mode: str | None = None,
+        gsea_axis_mode: str | None = None,
     ) -> pd.DataFrame:
+        """
+        Summarize the influence scores for each perturbation group
+        and add gene metadata.
+        """
         influence_summary = []
 
         for gene_id, influence in gene_rows.items():
@@ -233,16 +252,45 @@ class SystematicStep(BaseSystematicStep):
 
             influence_summary.append(row)
 
-        # keep top genes
-        df = pd.DataFrame(influence_summary).nlargest(n_genes_per_grouping, 'mean_abs_influence')
-        df = df.merge(
+        df = pd.DataFrame(influence_summary).merge(
             self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
             on='token_id',
             how='left',
             validate='many_to_one',
         )
+        # Rank genes by absolute influence (1 = highest influence)
+        df['influence_rank'] = (
+            df['mean_abs_influence']
+            .rank(method='min', ascending=False)
+            .astype(int)
+        )
 
-        return df
+        # if provided GSEA axis mode is not None, add influence score to
+        # corresponding lead genes
+        if gsea_axis_mode is not None:
+            cell_line_id = extra_fields.get('cell_line_id') if extra_fields else None
+            moa = extra_fields.get('moa') if extra_fields else None
+
+            # both require cell_line_id
+            if cell_line_id is None:
+                raise ValueError(
+                    f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
+                )
+
+            influence_lookup = df.set_index('gene_symbol').to_dict('index')
+            if gsea_axis_mode == 'cell_line_id' and self.gsea_global_axis is not None:
+                self.gsea_global_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id)
+
+            elif gsea_axis_mode == 'moa' and self.gsea_moa_axis is not None:
+                # requires moa
+                if moa is None:
+                    raise ValueError(
+                        f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
+                    )
+                self.gsea_moa_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id, moa)
+
+        # report out top genes
+        return df.nlargest(n_genes_per_grouping, 'mean_abs_influence')
 
     def summarize_tahoe100m_by_group(
         self,
@@ -637,7 +685,10 @@ class SystematicStep(BaseSystematicStep):
 
                 # save by cell line x MOA
                 cell_line_moa_df = self.summarize_influence(
-                    moa_gene_rows, extra_fields={'cell_line_id': cell_line_id, 'moa': moa}
+                    moa_gene_rows,
+                    extra_fields={'cell_line_id': cell_line_id, 'moa': moa},
+                    normalization_mode=mode,
+                    gsea_axis_mode='moa',
                 )
 
                 top_genes_by_cell_line_moa = pd.concat(
@@ -645,7 +696,7 @@ class SystematicStep(BaseSystematicStep):
                 )
 
             top_genes_by_cell_line_moa.to_csv(
-                by_cell_line_moa_dir / f'{mode}_{cell_line_id}_influential_genes_{cur_time}.csv',
+                by_cell_line_moa_dir / f'{mode}_{cell_line_id}_top200_influential_genes_{cur_time}.csv',
                 index=False,
             )
             del top_genes_by_cell_line_moa
@@ -677,7 +728,12 @@ class SystematicStep(BaseSystematicStep):
                         global_gene[key] += value
 
             # rank genes within this cell line
-            cell_line_df = self.summarize_influence(gene_rows, extra_fields={'cell_line_id': cell_line_id})
+            cell_line_df = self.summarize_influence(
+                gene_rows,
+                extra_fields={'cell_line_id': cell_line_id},
+                normalization_mode=mode,
+                gsea_axis_mode='cell_line_id'
+            )
             
             top_genes_by_cell_line_df = pd.concat(
                 [top_genes_by_cell_line_df, cell_line_df],
@@ -829,6 +885,22 @@ class SystematicStep(BaseSystematicStep):
 
         return merged
 
+    @classmethod
+    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add CLI args for this systematic step to the given parser."""
+        BaseSystematicStep.add_cli_args(parser=parser)
+
+        parser.add_argument(
+            '--gsea-global-shared-axis-hallmark', dest='gsea_global_shared_axis_hallmark', type=Path,
+            help='Path to the GSEA global shared axis results. If provided, will add influence scores '
+                 + 'to the corresponding lead genes'
+        )
+        parser.add_argument(
+            '--gsea-moa-shared-axis-hallmark', dest='gsea_moa_shared_axis_hallmark', type=Path,
+            help='Path to the GSEA MOA shared axis results. If provided, will add influence scores '
+                 + 'to the corresponding lead genes'
+        )
+
     def run(self) -> None:
         """Run the full pipeline."""
         log.info("Running Systema Systematic Variation + Reliability 2D")
@@ -894,6 +966,15 @@ class SystematicStep(BaseSystematicStep):
         except Exception as e:
             log.info(f"\n  ✗ FAILED: {e}")
             raise e
+
+        if self.gsea_global_axis is not None:
+            self.gsea_global_axis.to_csv(
+                self.output_dir / f'{self.args.gsea_global_shared_axis_hallmark.stem}_updated.csv'
+            )
+        if self.gsea_moa_axis is not None:
+            self.gsea_moa_axis.to_csv(
+                self.output_dir / f'{self.args.gsea_moa_shared_axis_hallmark.stem}_updated.csv'
+            )
 
         # ---- Cross-dataset summary ----
         for mode, summary_rows in all_summary_rows.items():

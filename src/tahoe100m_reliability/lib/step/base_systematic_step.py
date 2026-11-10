@@ -37,6 +37,7 @@ class BaseSystematicStep(PipelineStep):
         if not args.delta_p_raw_dir and not args.delta_p_cp10k_dir:
             raise FileNotFoundError("At least one delta_p dir must be passed")
 
+        self.args = args
         self.mode_mapping = {
             'raw': DeltaPMode(args.reliability_raw_dir, args.delta_p_raw_dir),
             'cp10k': DeltaPMode(args.reliability_cp10k_dir, args.delta_p_cp10k_dir)
@@ -103,3 +104,27 @@ class BaseSystematicStep(PipelineStep):
         # Remove duplicate drug annotations
         metadata = metadata.drop_duplicates(subset=["drug"])
         return metadata.set_index("drug")["moa-fine"].to_dict()
+
+    def load_moa_targets(self) -> dict[str, str]:
+        """Load MOA targets from Tahoe100M."""
+        drug_metadata = get_drug_metadata(to_pandas=True)
+        metadata = drug_metadata[["moa-fine", "targets"]]
+
+        # Remove missing values since not all drugs have targets
+        metadata = metadata.dropna(subset=['moa-fine', 'targets'])
+
+        # Split comma-separated targets and strip whitespace
+        metadata['targets'] = metadata['targets'].str.split(',').apply(
+            lambda targets: [target.strip() for target in targets if target.strip()]
+        )
+
+        # Group targets by MOA, keeping unique genes
+        moa_targets = (
+            metadata.groupby('moa-fine')['targets']
+            .apply(lambda groups: sorted(set(
+                gene for genes in groups for gene in genes
+            )))
+            .to_dict()
+        )
+
+        return moa_targets

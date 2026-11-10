@@ -146,60 +146,27 @@ class FiguresStep(PipelineStep):
             for axis in ['global', 'moa']:
                 df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
 
-                if axis == 'global':
-                    log.info("Plotting global axis")
-                    # plot_gsea_figures(
-                    #     df,
-                    #     gsea_output_dir,
-                    #     "gsea_global",
-                    #     organ_by_cell_line,
-                    #     "Global",
-                    #     influence_df=influence_df,
-                    # )
-                    # plot_moa_group_circos(
-
-                    # )
-
-                else:
-                    moa_groupings = {
-                        "RTK-RAS-MAPK signalling": [
-                            "EGFR/ERBB inhibitor",
-                            "Multi-TK inhibitor",
-                            "Other TK inhibitor",
-                            "RAS inhibitor",
-                            "RAF inhibitor",
-                            "MEK inhibitor",
-                            "Other MAPK inhibitor"
-                        ]
-                    }
-
-                    selected_moas = [
-                        "EGFR/ERBB inhibitor",
-                        "Multi-TK inhibitor",
-                        "Other TK inhibitor",
-                        "RAS inhibitor",
-                        "RAF inhibitor",
-                        "MEK inhibitor",
-                        "Other MAPK inhibitor"
-                    ]
-
-                    plot_moa_group_circos(
-                        gsea_df=df[~df["moa"].isin(['unclear'])].copy(),
-                        output_dir=gsea_output_dir,
-                        filename_prefix="gsea_pycirclize_by_moa",
-                        organ_by_cell_line=organ_by_cell_line,
-                        sector_gap=1
+                if axis == 'cell_line_id':
+                    log.info("Plotting cell_line_id axis")
+                    plot_gsea_figures(
+                        df,
+                        gsea_output_dir,
+                        "gsea_global",
+                        organ_by_cell_line,
+                        "Global",
+                        influence_df=influence_df,
                     )
 
-                    # for moa, moa_df in df.groupby("moa"):
-                    #     # Make directory name filesystem-safe
-                    #     safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
-                    #     log.info(f"Plotting MOA axis: {moa}")
-                    #     plot_gsea_figures(
-                    #         moa_df,
-                    #         gsea_output_dir,
-                    #         f"gsea_moa_{safe_moa}" ,
-                    #         organ_by_cell_line,
-                    #         moa,
-                    #         influence_df=influence_df,
-                    #     )
+                else:
+                    for moa, moa_df in df.groupby("moa"):
+                        # Make directory name filesystem-safe
+                        safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
+                        log.info(f"Plotting MOA axis: {moa}")
+                        plot_gsea_figures(
+                            moa_df,
+                            gsea_output_dir,
+                            f"gsea_moa_{safe_moa}" ,
+                            organ_by_cell_line,
+                            moa,
+                            influence_df=influence_df,
+                        )

@@ -1,5 +1,5 @@
 """
-Runs step 3 of the pipeline: GSEA.
+Runs step 2 of the pipeline: GSEA.
 """
 import argparse
 import blitzgsea as blitz
@@ -280,11 +280,6 @@ class GseaStep(BaseSystematicStep):
                         )
 
         # summarize GSEA results
-        groups = {
-            'global': all_rows,
-            'moa': moa_rows
-        }
-
         metadata = get_cell_line_metadata(to_pandas=True)
         metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
         metadata["organ"] = metadata["Organ"].astype(str).str.strip()
