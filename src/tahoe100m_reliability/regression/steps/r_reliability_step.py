@@ -234,7 +234,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
                                     if X_sub.dtype != np.float32 else X_sub)
 
                 if self.args.normalize_cp10k:
-                    X_stim_dense = normalize_cp10k(X_stim_dense)
+                    X_stim_dense = cp10k_normalization(X_stim_dense)
 
                 tasks.append((
                     cond_name,
@@ -314,7 +314,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
         # save delta_p results for downstream analysis
         if delta_p_results:
             if self.args.normalize_cp10k:
-                delta_p_filename = f"{ds_name}_CP10K_delta_p.npz"
+                delta_p_filename = f"{ds_name}_cp10k_delta_p.npz"
             else:
                 delta_p_filename = f"{ds_name}_delta_p.npz"
 
@@ -332,6 +332,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
             cluster=0,
             all_rows=all_rows,
             dataset_name=ds_name,
+            normalize_cp10k=self.args.normalize_cp10k,
         )
 
     def compare_baseline(self, ds_name: str, df_long: pd.DataFrame, df_summary: pd.DataFrame) -> None:

@@ -10,7 +10,7 @@ import textwrap
 from pathlib import Path
 
 from tahoe100m_reliability.lib.step.base_reliability_step import DEFAULT_N_HALF_GRID
-from tahoe100m_reliability.lib.ingest.intermediate_loaders import get_combined_split_half_reliability_df
+from tahoe100m_reliability.lib.ingest.intermediate_loaders import get_combined_cluster_split_half_reliability_df
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ class ReliabilityFigures:
         plt.savefig(self.__output_dir / outfile_name)
 
 
-    def plot_reliability_by_sample_size(self, gene_mode: str) -> None:
+    def plot_reliability_by_sample_size(self, rel_df: pd.DataFrame, gene_mode: str) -> None:
         """
         Plot reliability trends by sample size.
 
@@ -173,48 +173,10 @@ class ReliabilityFigures:
                 increases with the sample size. 
             - Heatmap highlighting reliability for every perturbation
         """
-        rel_df = get_combined_split_half_reliability_df(
-            self.__reliability_dir, None, summary=False, ds_name='tahoe100m'
-        )
-
         df = rel_df[
             (rel_df["n_mode"] == "fixed") &
             (rel_df["gene_mode"] == gene_mode)
         ].copy()
-
-        data = (
-            df.groupby(["condition", "n_half"])["median_r"]
-              .median()
-              .unstack("n_half")
-              .reindex(columns=DEFAULT_N_HALF_GRID)
-        )
-
-        # ---  LINE GRAPH ---
-        summary = pd.DataFrame({
-            "median": data.median(axis=0),
-            "q25": data.quantile(0.25, axis=0),
-            "q75": data.quantile(0.75, axis=0)
-        })
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-
-        ax.plot(DEFAULT_N_HALF_GRID, summary["median"], marker="o", label='Median across conditions')
-        ax.fill_between(
-            DEFAULT_N_HALF_GRID, summary["q25"], summary["q75"], alpha=0.2,
-            label="25th–75th percentile"
-        )
-
-        ax.set_xscale("log", base=2)
-        ax.set_xticks(DEFAULT_N_HALF_GRID)
-        ax.set_xticklabels(DEFAULT_N_HALF_GRID)
-        ax.set_ylim(0, 1)
-        ax.set_xlabel("Cells per half")
-        ax.set_ylabel("Median split-half correlation")
-        ax.set_title("Response reproducibility increases with sample size")
-        ax.grid(alpha=0.25)
-        ax.legend()
-        plt.tight_layout()
-        plt.savefig(self.__output_dir / f'reliability_{self.__mode}_by_sample_size_quartiles_{gene_mode}.png')
 
         # --- HEATMAP ---
         heat_data = (
@@ -287,23 +249,6 @@ class ReliabilityFigures:
             title=f"Split-half reliability across {heat.shape[0]} conditions (cell line x drug x dosage)",
             outfile_name=f"reliability_{self.__mode}_by_sample_size_heatmap_{gene_mode}.png"
         )
-
-        # also plot the bottom 20 reliable drugs. pick bottom 20 from
-        # each fixed size
-        bottom_n = 20
-        for fixed_size in DEFAULT_N_HALF_GRID:
-            heat_data_bottom20 = heat_data.nsmallest(bottom_n, columns=fixed_size)
-            heat_bottom20 = heat.nsmallest(bottom_n, columns=fixed_size)
-
-            self.__plot_reliability_heatmap(
-                max_df,
-                heat_data,
-                heat_bottom20,
-                title=f'Split-half reproducibility across bottom {bottom_n}-scoring conditions for fixed size {fixed_size}',
-                outfile_name=f"reliability_{self.__mode}_by_sample_size_heatmap_fixed_size_{fixed_size}_bottom_20_{gene_mode}.png",
-                figsize=(10, 7),
-                n_label=20,
-            )
 
         # next, group by drug
         # Extract drug name from condition: cell_line|drug|dosage
@@ -429,8 +374,19 @@ class ReliabilityFigures:
             count_max_available=False
         )
 
+        # also output the csv
+        cell_line_heat_data.to_csv(
+            self.__output_dir / f"reliability_{self.__mode}_heatmap_by_cell_line_{gene_mode}.csv"
+        )
+
     def generate_figures(self):
         """Generate figures."""
-        # plot reliability by sample size; consider both gene modes
-        self.plot_reliability_by_sample_size(gene_mode='all_genes')
-        self.plot_reliability_by_sample_size(gene_mode='top1000_expr')
+        rel_df = get_combined_cluster_split_half_reliability_df(
+            self.__reliability_dir, None, summary=False, ds_name='tahoe100m'
+        )
+
+        # plot reliability by sample size
+        self.plot_reliability_by_sample_size(rel_df, gene_mode='all_genes')
+
+        # optionally: look at top 1000 expressed gene results
+        # self.plot_reliability_by_sample_size(rel_df, gene_mode='top1000_expr')

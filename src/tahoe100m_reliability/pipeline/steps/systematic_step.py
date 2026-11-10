@@ -16,7 +16,7 @@ from tahoe100m_reliability.lib.analysis.influence_accumulator import (
     summarize_perturbation_influence,
 )
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
-    get_combined_split_half_reliability_df,
+    get_combined_cluster_split_half_reliability_df,
     load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
@@ -760,8 +760,8 @@ class SystematicStep(BaseSystematicStep):
 
         Merges on the 'condition' column (format: "context|perturbation").
         """
-        rel_df = get_combined_split_half_reliability_df(
-            reliability_dir, self.clusters, summary=True, ds_name=ds_name
+        rel_df = get_combined_cluster_split_half_reliability_df(
+            reliability_dir, self.clusters, ds_name=ds_name
         )
         log.info(f"  Loaded reliability: {len(rel_df)} conditions")
 

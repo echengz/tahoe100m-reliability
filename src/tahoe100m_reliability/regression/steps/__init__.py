@@ -1,2 +1,3 @@
-from .regression_reliability_step import RegressionReliabilityStep
-from .regression_systematic_step import RegressionSystematicStep
+from .r_figures_step import RegressionFiguresStep
+from .r_reliability_step import RegressionReliabilityStep
+from .r_systematic_step import RegressionSystematicStep

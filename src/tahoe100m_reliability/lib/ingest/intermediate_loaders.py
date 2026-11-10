@@ -64,7 +64,8 @@ def _get_reliability_df(ds_name: str, source_dir: Path, prefix: str, clusters: s
 
     if not files:
         raise FileNotFoundError(
-            f"No reliability files with prefix {prefix} found for the following clusters: {clusters}"
+            f"No reliability files in {source_dir} with prefix {prefix} "
+            + f"found for the following clusters: {clusters}"
         )
 
     return pd.concat(
@@ -73,10 +74,10 @@ def _get_reliability_df(ds_name: str, source_dir: Path, prefix: str, clusters: s
     )
 
 
-def get_combined_split_half_reliability_df(
+def get_combined_cluster_split_half_reliability_df(
     reliability_dir: Path,
     clusters: set[int] | None = None,
-    summary: bool = False,
+    summary: bool = True,
     ds_name: str | None = 'tahoe100m'
 ) -> pd.DataFrame:
     """Get split-half reliability data as a pandas dataframe, combining all clusters"""
@@ -88,18 +89,54 @@ def get_combined_split_half_reliability_df(
     return _get_reliability_df(ds_name, reliability_dir, prefix, clusters)
 
 
+def get_combined_datasets_split_half_reliability_df(
+    datasets: list[str],
+    reliability_dir: Path,
+    summary: bool = True,
+    normalization_mode: str | None = None
+) -> pd.DataFrame:
+    """Get split-half reliability data as a pandas dataframe, combining all specified datasets.
+
+    Kind of a hack to do this through clusters, and definitely inefficient, but lets us reuse
+    existing functions. Should refactor at some point.
+    """
+
+    all_dfs = []
+    for ds_name in datasets:
+        if normalization_mode is not None:
+            target = f'{ds_name}_{normalization_mode}'
+        else:
+            target = ds_name
+
+        if summary:
+            prefix = f'reliability_summary_{target}_cluster'
+        else:
+            prefix = f'reliability_{target}_cluster'
+
+        df = _get_reliability_df(
+            target, reliability_dir, prefix, clusters={0}
+        )
+        df['dataset'] = ds_name
+        if normalization_mode:
+            df['normalization'] = normalization_mode
+
+        all_dfs.append(df)
+
+    return pd.concat(all_dfs, ignore_index=True)
+
+
 def load_reliable_conditions(
     ds_name: str,
     reliability_dir: Path,
     clusters: set[int] | None,
     rel_col_fallbacks=REL_COL_FALLBACKS
-    ) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str]]:
     """
     Load the per-(context,perturbation) reliability summary and return
     the set of 'condition' keys (format 'ctx|drug|dosage') with ρ ≥ RELIABILITY_THRESHOLD.
     The cellular reliability CSVs are named `reliability*_tahoe100m_cluster_*.csv`.
     """
-    rel_df = get_combined_split_half_reliability_df(reliability_dir, clusters, summary=False, ds_name=ds_name)
+    rel_df = get_combined_cluster_split_half_reliability_df(reliability_dir, clusters, ds_name=ds_name)
     rel_col = next((c for c in rel_col_fallbacks if c in rel_df.columns), None)
 
     if rel_col is None:

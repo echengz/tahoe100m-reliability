@@ -112,7 +112,7 @@ class BaseReliabilityStep(PipelineStep):
         )
 
     def summarize_split_half_results(
-        self, cluster: int, all_rows: list, dataset_name: str,
+        self, cluster: int, all_rows: list, dataset_name: str, normalize_cp10k: bool,
     ) -> None:
         """Summarize the pearson split half reliability results."""
         # ---- Build DataFrames ----
@@ -213,6 +213,12 @@ class BaseReliabilityStep(PipelineStep):
 
         # write to output
         cur_time = time.strftime('%Y%m%d-%H%M%S')
+
+        if normalize_cp10k:
+            dataset_name = f'{dataset_name}_cp10k'
+        else:
+            dataset_name = f'{dataset_name}_raw'
+
         df_long.to_csv(
             self.args.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{cur_time}.csv',
             index=False

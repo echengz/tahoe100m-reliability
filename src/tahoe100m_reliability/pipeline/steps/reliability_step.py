@@ -549,7 +549,7 @@ class ReliabilityStep(BaseReliabilityStep):
                     # needs to be done across entire cell lines so cannot be done here
                     if delta_p_results:
                         if self.args.normalize_cp10k:
-                            delta_p_filename = f'{cell_line_id}_CP10K_delta_p_cluster{cluster}.npz'
+                            delta_p_filename = f'{cell_line_id}_cp10k_delta_p_cluster{cluster}.npz'
                         else:
                             delta_p_filename = f"{cell_line_id}_delta_p_cluster{cluster}.npz" 
 
@@ -568,6 +568,7 @@ class ReliabilityStep(BaseReliabilityStep):
             cluster=cluster,
             all_rows=all_compute_results['split_half'],
             dataset_name='tahoe100m',
+            normalize_cp10k=self.args.normalize_cp10k,
         )
 
         # write out dropped genes

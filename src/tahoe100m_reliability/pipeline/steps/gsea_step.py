@@ -14,7 +14,7 @@ from tqdm import tqdm
 from typing import Any
 
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
-    get_combined_split_half_reliability_df,
+    get_combined_cluster_split_half_reliability_df,
     load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
