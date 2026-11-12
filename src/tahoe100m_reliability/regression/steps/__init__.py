@@ -1,3 +1,2 @@
-from .r_figures_step import RegressionFiguresStep
 from .r_reliability_step import RegressionReliabilityStep
 from .r_systematic_step import RegressionSystematicStep

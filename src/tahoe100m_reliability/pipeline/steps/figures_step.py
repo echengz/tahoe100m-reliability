@@ -23,7 +23,7 @@ from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
 from .figures.gsea_figures import plot_gsea_figures
-from .figures.gsea_pycirclize import plot_moa_group_circos
+from .figures.gsea_pycirclize import plot_moa_clusters
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
 from .figures.systematic_figures import (
@@ -131,7 +131,11 @@ class FiguresStep(PipelineStep):
         if self.__gsea_dir:
             log.info("Generating GSEA figures...")
             gsea_output_dir = self.__output_dir / 'gsea'
-            gsea_output_dir.mkdir(parents=True, exist_ok=True)
+            individual_results_dir = gsea_output_dir / 'individual'
+            by_clustered_moa_dir = gsea_output_dir / 'clustered_moa'
+
+            individual_results_dir.mkdir(parents=True, exist_ok=True)
+            by_clustered_moa_dir.mkdir(parents=True, exist_ok=True)
 
             metadata = get_cell_line_metadata(to_pandas=True)
             metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
@@ -143,30 +147,62 @@ class FiguresStep(PipelineStep):
                 if influence_by_cell_line_moa_dir.is_dir():
                     influence_df = load_influence_by_cell_line_moa(influence_by_cell_line_moa_dir)
 
+            # plot everything individually, and also by grouped MOAs
             for axis in ['global', 'moa']:
                 df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
 
-                if axis == 'cell_line_id':
+                if axis == 'global':
                     log.info("Plotting cell_line_id axis")
                     plot_gsea_figures(
                         df,
-                        gsea_output_dir,
+                        individual_results_dir,
                         "gsea_global",
                         organ_by_cell_line,
                         "Global",
-                        influence_df=influence_df,
                     )
-
                 else:
                     for moa, moa_df in df.groupby("moa"):
-                        # Make directory name filesystem-safe
+                        # Make name filesystem-safe
                         safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
                         log.info(f"Plotting MOA axis: {moa}")
                         plot_gsea_figures(
                             moa_df,
-                            gsea_output_dir,
+                            individual_results_dir,
                             f"gsea_moa_{safe_moa}" ,
                             organ_by_cell_line,
                             moa,
-                            influence_df=influence_df,
                         )
+
+                    # load MOA cluster assignments
+                    moa_cluster_assignments = pd.read_csv(
+                        self.__gsea_dir / 'moa_clustering' / mode / f'{mode}_moa_cluster_assignments.csv'
+                    )
+
+                    moa_clusters = {
+                        cluster: sorted(moas)
+                        for cluster, moas in moa_cluster_assignments.groupby("cluster")["moa"]
+                    }
+                    moa_order = []
+
+                    for cluster, moas in moa_clusters.items():
+                        plot_moa_clusters(
+                            gsea_df=df[df["moa"].isin(moas)].copy(),
+                            output_dir=by_clustered_moa_dir,
+                            filename_prefix=f"gsea_pycirclize_by_moa_cluster{cluster}",
+                            organ_by_cell_line=organ_by_cell_line,
+                            title=f'Hallmark GSEA by MOA - Cluster {cluster}'
+                        )
+
+                        moa_order.extend(moas)
+
+                    # plot them all on one plot
+                    plot_moa_clusters(
+                        gsea_df=df,
+                        output_dir=by_clustered_moa_dir,
+                        filename_prefix="gsea_pycirclize_by_all",
+                        organ_by_cell_line=organ_by_cell_line,
+                        moa_order=moa_order,
+                        title='Hallmark GSEA by MOA - All',
+                        moa_clusters=moa_clusters
+                    )
+

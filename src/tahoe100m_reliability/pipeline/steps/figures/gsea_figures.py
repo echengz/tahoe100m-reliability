@@ -129,13 +129,13 @@ def prepare_nes_matrices(df, organ_by_cell_line):
         nes = subset.pivot(
             index="term",
             columns="cell_line",
-            values="NES",
+            values="nes",
         )
 
         fdr = subset.pivot(
             index="term",
             columns="cell_line",
-            values="FDR_qval",
+            values="fdr_qval",
         )
 
         nes = nes.reindex(index=terms, columns=cell_lines)
@@ -144,103 +144,6 @@ def prepare_nes_matrices(df, organ_by_cell_line):
         matrices[mode] = {
             "nes": nes,
             "fdr": fdr,
-        }
-
-    return matrices
-
-
-def prepare_influence_matrices(gsea_df, influence_df, nes_matrix):
-    gsea = gsea_df.copy()
-    influence = influence_df.copy()
-
-    # Harmonize gene symbols
-    gsea["lead_genes"] = gsea["lead_genes"].fillna("")
-    gsea["lead_genes"] = gsea["lead_genes"].str.split(";")
-
-    influence["gene_symbol"] = (
-        influence["gene_symbol"].str.upper().str.strip()
-    )
-
-    # One influence score per gene and cell line is expected
-    if influence.duplicated(["cell_line_id", "gene_symbol"]).any():
-        raise ValueError(
-            "Duplicate gene/cell-line influence rows; "
-            "aggregate them before joining."
-        )
-
-    # Expand each pathway's leading edge into individual genes
-    long = gsea.explode("lead_genes").rename(
-        columns={"lead_genes": "gene_symbol"}
-    )
-
-    long["gene_symbol"] = (
-        long["gene_symbol"].str.upper().str.strip()
-    )
-
-    long = long[
-        long["gene_symbol"].notna()
-        & long["gene_symbol"].ne("")
-    ]
-
-    # Match leading-edge genes to their cell-line-specific scores
-    merged = long.merge(
-        influence[
-            [
-                "cell_line_id",
-                "gene_symbol",
-                "avg_influence",
-                "mean_abs_influence",
-            ]
-        ],
-        left_on=["cell_line", "gene_symbol"],
-        right_on=["cell_line_id", "gene_symbol"],
-        how="left",
-        validate="many_to_one",
-    )
-
-    stats = (
-        merged.groupby(
-            ["mode", "cell_line", "term"],
-            dropna=False,
-        )
-        .agg(
-            mean_influence=("avg_influence", "mean"),
-            median_influence=("avg_influence", "median"),
-            mean_abs_influence=("mean_abs_influence", "mean"),
-            pct_positive=(
-                "avg_influence",
-                lambda x: 100 * (x.dropna() > 0).mean()
-                if x.notna().any() else np.nan,
-            ),
-            n_influence_genes=("avg_influence", "count"),
-        )
-        .reset_index()
-    )
-
-    matrices = {}
-
-    for mode in ["raw", "cp10k"]:
-        subset = stats[stats["mode"] == mode]
-
-        matrices[mode] = {
-            metric: (
-                subset.pivot(
-                    index="term",
-                    columns="cell_line",
-                    values=metric,
-                )
-                .reindex(
-                    index=nes_matrix.index,
-                    columns=nes_matrix.columns,
-                )
-            )
-            for metric in [
-                "mean_influence",
-                "median_influence",
-                "mean_abs_influence",
-                "pct_positive",
-                "n_influence_genes",
-            ]
         }
 
     return matrices
@@ -653,7 +556,6 @@ def plot_gsea_figures(
     filename_prefix: str,
     organ_by_cell_line: dict[str, Any],
     title_postfix: str,
-    influence_df: pd.DataFrame | None = None
 ) -> None:
     """Plot GSEA results.
 
@@ -681,11 +583,6 @@ def plot_gsea_figures(
         output_dir / f"{filename_prefix}_characterization.csv",
         index=False
     )
-
-    if influence_df is not None:
-        inf_matrices = prepare_influence_matrices(gsea_df, influence_df, nes_matrices)
-    else:
-        inf_matrices = None
 
     # Same NES color scale for raw and CP10k
     all_nes = pd.concat(
@@ -723,8 +620,3 @@ def plot_gsea_figures(
             vmax=vmax,
             organ_by_cell_line=organ_by_cell_line,
         )
-
-        # if inf_matrices:
-        #     plot_influence_heatmap(
-        #         gsea_df=gsea_df,
-        #     )

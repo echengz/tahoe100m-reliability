@@ -326,8 +326,11 @@ class ReliabilityStep(BaseReliabilityStep):
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize reliability step."""
-        self.args = args
-        self.args.output_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(args)
+        if self.args.normalize_cp10k:
+            self.delta_p_dir = self.args.output_dir / 'delta_p_cp10k'
+        else:
+            self.delta_p_dir = self.args.output_dir / 'delta_p_raw'
 
     def __aggregate_stim_data(self, treatments: list[TreatmentSet], stim_dir: Path):
         """Localize and aggregate stim data from the HuggingFace repository."""
@@ -564,11 +567,15 @@ class ReliabilityStep(BaseReliabilityStep):
                     shared_ctrl['shm'].unlink()
 
         # summarize reliability results
+        if self.args.normalize_cp10k:
+            dataset_name = f'{dataset_name}_cp10k'
+        else:
+            dataset_name = f'{dataset_name}_raw'
+
         self.summarize_split_half_results(
             cluster=cluster,
             all_rows=all_compute_results['split_half'],
-            dataset_name='tahoe100m',
-            normalize_cp10k=self.args.normalize_cp10k,
+            dataset_name=dataset_name,
         )
 
         # write out dropped genes
@@ -611,6 +618,11 @@ class ReliabilityStep(BaseReliabilityStep):
             '-d', '--drug-dosages-csv', dest='drug_dosages_csv', required=True, type=Path,
             help='Path to a CSV file listing all the drug x dosage combinations with their cluster index.'
         )
+        parser.add_argument(
+            '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
+            help='Whether or not to run normalize the gene transcription counts with CP10K'
+        )
+
         parser.add_argument(
             '--clusters', dest='clusters', required=False, type=str,
             help='Comma-deliminated list of specific cluster(s) to compute Δ-reliability index for. '

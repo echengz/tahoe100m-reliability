@@ -10,11 +10,13 @@ import pandas as pd
 import re
 
 from pathlib import Path
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist
+from sklearn.decomposition import PCA
 from tqdm import tqdm
 from typing import Any
 
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
-    get_combined_cluster_split_half_reliability_df,
     load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
@@ -30,6 +32,7 @@ log = logging.getLogger(__name__)
 logging.getLogger("gseapy").setLevel(logging.ERROR)
 
 FDR_THRESHOLD = 0.05
+CLUSTER_MIN_PATHWAY_COVERAGE = 0.90
 
 
 def load_hallmark_sets():
@@ -104,6 +107,9 @@ class GseaStep(BaseSystematicStep):
             )
         )
 
+        self.__num_moa_clusters = args.num_moa_clusters
+        self.__hallmark_sets = load_hallmark_sets()
+
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         """Add CLI args for this systematic step to the given parser."""
@@ -119,6 +125,11 @@ class GseaStep(BaseSystematicStep):
             help='Whether or not to skip calculation of the MOA shared axis results'
         )
 
+        parser.add_argument(
+            '--num-moa-clusters', dest='num_moa_clusters', type=int, default=3,
+            help='Number of clusters to generate from MOA results'
+        )
+
     def __run_gsea(
         self,
         mode: str,
@@ -128,7 +139,6 @@ class GseaStep(BaseSystematicStep):
         deltas,
         weights,
         gene_symbols,
-        hallmark_sets,
         moa: str | None = None
     ):
         """Runs GSEA on shared axis for specified conditions."""
@@ -137,7 +147,7 @@ class GseaStep(BaseSystematicStep):
         shared = np.average(rel_deltas, axis=0, weights=rel_weights)
 
         genes_upper = [g.upper() for g in gene_symbols]
-        gsea = gsea_nes(shared, genes_upper, hallmark_sets)
+        gsea = gsea_nes(shared, genes_upper, self.__hallmark_sets)
 
         for term, stats in gsea.items():
             row = {
@@ -159,9 +169,226 @@ class GseaStep(BaseSystematicStep):
 
             output_rows.append(row)
 
+    def __load_deltas_and_weights(
+        self,
+        cell_line: str,
+        delta_p_dir: Path,
+        reliable_conds: set[str], 
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Load deltas and their corresponding weights, indexed by the condition."""
+        delta_p_dir = load_delta_p_results(
+            ds_name=self.ds_name,
+            delta_p_dir=delta_p_dir,
+            target_conds=reliable_conds,  # only care about reliable conditions in this context
+            clusters=self.clusters,
+            cell_lines={cell_line},
+        )
+
+        if cell_line not in delta_p_dir:
+            raise FileNotFoundError(f"{cell_line}: no matching NPZ files")
+
+        data = delta_p_dir[cell_line]
+
+        conditions = data["conditions"].astype(str)
+        n_stim_cells = data["n_stim_cells"]
+        delta_p = data["delta_p"]
+
+        if not sorted(conditions):
+            raise ValueError(f"{cell_line}: no reliable conditions found")
+
+        deltas = {
+            condition: delta_p[i]
+            for i, condition in enumerate(conditions)
+        }
+
+        weights = {
+            condition: int(n_stim_cells[i])
+            for i, condition in enumerate(conditions)
+        }
+
+        return deltas, weights
+
+    def __summarize_gsea_results(
+        self, all_rows: list, moa_rows: list,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Summarize GSEA results, also add organ information."""
+        # add organ information
+        metadata = get_cell_line_metadata(to_pandas=True)
+        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
+
+        metadata["organ"] = (
+            metadata["Organ"]
+            .where(metadata["Organ"].notna())
+            .astype("string")
+            .str.strip()
+        )
+
+        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+        results = {}
+
+        for axis, rows in {"global": all_rows, "moa": moa_rows}.items():
+            df = pd.DataFrame(rows)
+            df["significant"] = df["fdr_qval"] < FDR_THRESHOLD
+            df["organ"] = df["cell_line"].map(organ_by_cell_line)
+
+            df.to_csv(self.output_dir / f"{axis}_shared_axis_hallmark_gsea.csv", index=False)
+
+            results[axis] = df
+
+        return results["global"], results["moa"]
+
+    def __cluster_moa_results(self, df: pd.DataFrame) -> None:
+        """Cluster MOAs independently for each mode by NES values."""
+        log.info("Clustering MOA results...")
+
+        output_dir = self.output_dir / "moa_clustering"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        df = df[["mode", "moa", "term", "nes"]].copy()
+        df["nes"] = pd.to_numeric(df["nes"], errors="coerce")
+        df = df.dropna(subset=["mode", "moa", "term", "nes"])
+        df["term"] = df["term"].astype(str).str.strip()
+
+        for mode, mode_df in df.groupby("mode"):
+            # Average NES across cell lines for each MOA and pathway.
+            profiles = (
+                mode_df.groupby(["moa", "term"])["nes"]
+                .mean()
+                .unstack("term")
+            )
+
+            # Retain pathways with sufficient coverage across MOAs.
+            coverage = profiles.notna().mean(axis=0)
+            profiles = profiles.loc[:, coverage >= CLUSTER_MIN_PATHWAY_COVERAGE]
+
+            profiles = profiles.fillna(profiles.mean(axis=0))
+            profiles = profiles.loc[:, profiles.std(axis=0) > 1e-12]
+
+            profiles.to_csv(output_dir / f"{mode}_moa_hallmark_nes_profiles.csv")
+
+            distances = pdist(profiles.values, metric="euclidean")
+            Z = linkage(distances, method="average")
+
+            cluster_labels = fcluster(
+                Z,
+                t=min(self.__num_moa_clusters, len(profiles)),
+                criterion="maxclust",
+            )
+
+            moa_clusters = pd.DataFrame({
+                "moa": profiles.index,
+                "cluster": cluster_labels,
+            }).sort_values(["cluster", "moa"])
+
+            moa_clusters.to_csv(
+                output_dir / f"{mode}_moa_cluster_assignments.csv",
+                index=False,
+            )
+
+    def __moa_pca_and_cluster(self, mode: str, df: pd.DataFrame) -> None:
+        """Run PCA on MOA GSEA results and cluster based on centroids.
+
+        Constructs a PCA matrix where each row is a specific cell line x MOA observation,
+        with biological pathways as the columna features and NES scores as the values. 
+        """
+        output_dir = self.output_dir / "moa_clustering" / mode
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # get fields of interest
+        fields = ['moa', 'cell_line', 'organ', 'term', 'nes']
+        df = df[fields].copy()
+        df['nes'] = pd.to_numeric(df['nes'], errors='coerce')
+        df = df.dropna(subset=fields)
+
+        # group one row per MOA x cell line/organ x pathways
+        # in theory should be no duplicates, but take the average just in case
+        df = df.groupby(['moa', 'cell_line', 'organ', 'term'], as_index=False)["nes"].mean()
+
+        # generate PCA matrix; keep observations with enough coverage
+        matrix = df.pivot(index=['moa', 'cell_line', 'organ'], columns='term', values='nes')
+        matrix = matrix.loc[:, matrix.notna().mean(axis=0) >= CLUSTER_MIN_PATHWAY_COVERAGE]
+
+        # Handle missing data
+        if matrix.isna().any().any():
+            log.warning("Missing NES values found. Using pathway-wise mean imputation.")
+            matrix = matrix.fillna(matrix.mean(axis=0))
+
+        # Remove pathways with no variation.
+        matrix = matrix.loc[:, matrix.std(axis=0) > 1e-12]
+
+        if matrix.shape[0] < 3 or matrix.shape[1] < 2:
+            raise ValueError("Not enough contexts or pathways for PCA.")
+
+        # run PCA
+        X = matrix.to_numpy(dtype=float)
+        X = X - X.mean(axis=0)  # center features
+
+        n_components = min(X.shape[0], X.shape[1])
+        pca = PCA(n_components=n_components)
+
+        scores = pca.fit_transform(X)
+        explained = pca.explained_variance_ratio_
+
+        log.info("Explained variance:")
+        log.info(f"PC1: {explained[0] * 100:.2f}%")
+        log.info(f"PC2: {explained[1] * 100:.2f}%")
+
+        # Save all PCA coordinates
+        scores_df = pd.DataFrame(
+            scores,
+            columns=[f"PC{i+1}" for i in range(scores.shape[1])],
+            index=matrix.index,
+        ).reset_index()
+
+        scores_df.to_csv(output_dir / f"{mode}_pca_context_coordinates.csv", index=False)
+
+        # Save explained variance
+        pd.DataFrame({
+            "PC": [f"PC{i+1}" for i in range(len(explained))],
+            "explained_variance_ratio": explained,
+        }).to_csv(output_dir / f"{mode}_pca_explained_variance.csv", index=False)
+
+        # save pathway loadings
+        loadings = pd.DataFrame(
+            pca.components_.T,
+            index=matrix.columns,
+            columns=[f"PC{i+1}" for i in range(n_components)],
+        )
+
+        loadings.to_csv(output_dir / f"{mode}_pca_pathway_loadings.csv")
+
+        # Perform hierarchical clustering based on the PCA centroids
+        # include enough PCs to capture most of variation
+        pc_cols = [c for c in scores_df.columns if c.startswith("PC")]
+        pc_cols = sorted(pc_cols, key=lambda x: int(x[2:]))
+
+        cumulative = np.cumsum(explained)
+        n_pcs = int(np.searchsorted(cumulative, 0.80) + 1)
+        selected_pcs = pc_cols[:n_pcs]
+        log.info(f"Using {len(selected_pcs)} PCs: {selected_pcs}")
+
+        # find MOA centroids and perform clustering
+        moa_centroids = scores_df.groupby("moa")[selected_pcs].mean()
+        Z = linkage(
+            moa_centroids.values,
+            method="ward",
+            metric="euclidean"
+        )
+        cluster_labels = fcluster(
+            Z,
+            t=self.__num_moa_clusters,
+            criterion="maxclust"
+        )
+
+        moa_clusters = pd.DataFrame({
+            "moa": moa_centroids.index,
+            "cluster": cluster_labels
+        })
+
+        moa_clusters.to_csv(output_dir / f"{mode}_moa_cluster_assignments.csv", index=False)
+
     def run(self) -> None:
         """Run the step."""
-        hallmark_sets = load_hallmark_sets()
         drug_to_moa = self.load_drug_moa_mapping() if not self.skip_moa_shared_axis else {}
 
         # track globally and by drug
@@ -189,45 +416,18 @@ class GseaStep(BaseSystematicStep):
 
             log.info(f"\n[{mode}] {len(cell_lines)} cell line(s) to process")
             for cell_line in tqdm(cell_lines, desc=f"Processing cell lines for mode: {mode}"):
-                # Load deltas
-                delta_p_dir = load_delta_p_results(
-                    ds_name=self.ds_name,
-                    delta_p_dir=delta_p_dir,
-                    target_conds=reliable_conds,  # only care about reliable conditions in this context
-                    clusters=self.clusters,
-                    cell_lines={cell_line},
+                deltas, weights = self.__load_deltas_and_weights(
+                    cell_line,
+                    delta_p_dir,
+                    reliable_conds,
                 )
-
-                if cell_line not in delta_p_dir:
-                    log.warning(f"{cell_line}: no matching NPZ files; skipping")
-                    continue
-
-                data = delta_p_dir[cell_line]
-
-                conditions = data["conditions"].astype(str)
-                n_stim_cells = data["n_stim_cells"]
-                delta_p = data["delta_p"]
-
-                conds = sorted(conditions)
-
-                if not conds:
-                    log.warning(f"{cell_line}: no reliable conditions found; skipping")
-                    continue
-
-                deltas = {
-                    condition: delta_p[i]
-                    for i, condition in enumerate(conditions)
-                }
-
-                weights = {
-                    condition: int(n_stim_cells[i])
-                    for i, condition in enumerate(conditions)
-                }
 
                 # load gene IDs
                 gene_ids = load_gene_ids(self.ctrl_gene_expressions_dir, cell_line)
                 gene_symbols = [self.id_to_symbol.get(int(gid), "") for gid in gene_ids]
 
+                # sanity check that genes align with deltas
+                conds = sorted(list(deltas.keys()))
                 vector_lengths = {len(deltas[c]) for c in conds}
                 if len(vector_lengths) != 1:
                     raise ValueError(f"{cell_line}/{mode}: inconsistent delta vector lengths")
@@ -249,7 +449,6 @@ class GseaStep(BaseSystematicStep):
                     deltas,
                     weights,
                     gene_symbols,
-                    hallmark_sets,
                 )
 
                 # MOA-specific axis - groups reliability perturbations for a specific MOA
@@ -275,68 +474,15 @@ class GseaStep(BaseSystematicStep):
                             deltas,
                             weights,
                             gene_symbols,
-                            hallmark_sets,
                             moa=moa,
                         )
 
         # summarize GSEA results
-        metadata = get_cell_line_metadata(to_pandas=True)
-        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-        metadata["organ"] = metadata["Organ"].astype(str).str.strip()
-        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+        _, moa_df = self.__summarize_gsea_results(all_rows, moa_rows)
 
-        for axis, rows in {'global': all_rows, 'moa': moa_rows}.items():
-            if not rows:
-                continue
+        moa_df = pd.read_csv('./gsea-test-cluster/moa_shared_axis_hallmark_gsea.csv')
 
-            df = pd.DataFrame(rows)
-            df['significant'] = df['fdr_qval'] < FDR_THRESHOLD
-            df.to_csv(self.output_dir / f"{axis}_shared_axis_hallmark_gsea.csv", index=False)
-
-            # get the top positive and negative NES pathways
-            # for every cell line and mode
-            log.info("Summarizing GSEA results...")
-            group_columns = ['mode', 'cell_line']
-            if axis == 'moa':
-                group_columns.append('moa')
-
-            summaries = []
-            for _, group in df.groupby(group_columns):
-                group = group.dropna(subset=["nes"])
-
-                positive = group[group["nes"] > 0].nlargest(self.num_top_pathways, "nes").copy()
-                positive["direction"] = "positive"
-
-                negative = group[group["nes"] < 0].nsmallest(self.num_top_pathways, "nes").copy()
-                negative["direction"] = "negative"
-
-                summaries.extend([positive, negative])
-
-            if summaries:
-                summary = pd.concat(summaries, ignore_index=True)
-                summary.sort_values(
-                    group_columns + ['direction', 'fdr_qval']
-                ).to_csv(self.output_dir / f"{axis}_top_{self.num_top_pathways}_pathways.csv", index=False)
-
-            # Select pathways significant in at least one result.
-            significant_terms = sorted(
-                df.loc[df["significant"], "term"].dropna().unique()
-            )
-
-            # If none pass the threshold, show the 30 pathways with
-            # the smallest minimum FDR instead.
-            if not significant_terms:
-                significant_terms = (
-                    df.groupby("term")["fdr_qval"]
-                    .min()
-                    .nsmallest(30)
-                    .index.tolist()
-                )
-
-            # Save significant results
-            df[df["significant"]].sort_values(
-                group_columns + ['fdr_qval']
-            ).to_csv(self.output_dir / f"{axis}_significant_pathways.csv", index=False)
-
-            log.info(f"Total rows: {len(df)}")
-            log.info(f"Rows with FDR < {FDR_THRESHOLD}: {df['significant'].sum()}")
+        # cluster MOA results
+        if not self.skip_moa_shared_axis:
+            for mode, mode_df in moa_df.groupby("mode"):
+                self.__moa_pca_and_cluster(mode, mode_df)

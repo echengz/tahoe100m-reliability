@@ -30,11 +30,7 @@ class BaseReliabilityStep(PipelineStep):
         self.n_half_grid = sorted(
             {int(x.strip()) for x in self.args.n_half_grid.split(",") if x.strip()}
         )
-
-        if self.args.normalize_cp10k:
-            self.delta_p_dir = self.args.output_dir / 'delta_p_cp10k'
-        else:
-            self.delta_p_dir = self.args.output_dir / 'delta_p_raw'
+        self.delta_p_dir = self.args.output_dir / 'delta_p_raw'
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -69,11 +65,6 @@ class BaseReliabilityStep(PipelineStep):
             "--n-half-grid", dest="n_half_grid", type=str, default=n_half_default,
             help="Comma-separated fractions of stimulated cells per split half "
                 + f"for the fixed-n curve. Default: {n_half_default}.",
-        )
-
-        parser.add_argument(
-            '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
-            help='Whether or not to run normalize the gene transcription counts with CP10K'
         )
 
     def save_delta_p_results(
@@ -111,9 +102,7 @@ class BaseReliabilityStep(PipelineStep):
             delta_p=delta_p_stack,
         )
 
-    def summarize_split_half_results(
-        self, cluster: int, all_rows: list, dataset_name: str, normalize_cp10k: bool,
-    ) -> None:
+    def summarize_split_half_results(self, cluster: int, all_rows: list, dataset_name: str) -> None:
         """Summarize the pearson split half reliability results."""
         # ---- Build DataFrames ----
         df_long = pd.DataFrame(all_rows)
@@ -213,11 +202,6 @@ class BaseReliabilityStep(PipelineStep):
 
         # write to output
         cur_time = time.strftime('%Y%m%d-%H%M%S')
-
-        if normalize_cp10k:
-            dataset_name = f'{dataset_name}_cp10k'
-        else:
-            dataset_name = f'{dataset_name}_raw'
 
         df_long.to_csv(
             self.args.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{cur_time}.csv',

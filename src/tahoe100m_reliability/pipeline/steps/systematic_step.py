@@ -1,19 +1,23 @@
+
 """
 Runs step 3 of the pipeline: systematic.
+
+Preserves the original leave-one-gene-out analysis and adds:
+    1. Pathway-level influence (remove each significant MOA GSEA pathway).
+    2. Union-level influence (remove all significant pathway lead genes together).
 """
 import argparse
 import logging
 import numpy as np
 import pandas as pd
 import time
-import re
 
 from pathlib import Path
 from tqdm import tqdm
 
 from tahoe100m_reliability.lib.analysis.influence_accumulator import (
-    GSEAInfluenceAnnotator,
     InfluenceAccumulator,
+    GroupInfluenceAccumulator,
     summarize_perturbation_influence,
 )
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
@@ -25,10 +29,6 @@ from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
     SPECIFICITY_THRESH,
     REL_COL_FALLBACKS,
 )
-from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
-    get_drug_metadata,
-)
-
 from tahoe100m_reliability.lib.step.base_systematic_step import BaseSystematicStep
 
 logging.basicConfig(level=logging.INFO)
@@ -40,69 +40,43 @@ def cosine_similarity(a, b):
     dot = np.dot(a, b)
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
+
     if norm_a < 1e-12 or norm_b < 1e-12:
         return 0.0
+
     return float(dot / (norm_a * norm_b))
 
 
-def batch_cosine_similarity(deltas, avg_delta):
-    """
-    Cosine similarity between each row of `deltas` and a single vector.
-
-    Parameters
-    ----------
-    deltas    : ndarray, shape (N_perts, G)
-    avg_delta : ndarray, shape (G,)
-
-    Returns
-    -------
-    cos_sims : ndarray, shape (N_perts,)
-    """
-    dots = deltas @ avg_delta
-    norms_delta = np.linalg.norm(deltas, axis=1)
-    norm_avg = np.linalg.norm(avg_delta)
-    denom = norms_delta * norm_avg
-    denom[denom < 1e-12] = 1.0
-    return dots / denom
-
-
-def calculate_frac_systematic(
-    delta_p, delta_avg, norm_delta_avg, is_rel
-):
+def calculate_frac_systematic(delta_p, delta_avg, norm_delta_avg, is_rel):
+    """Calculate baseline systematic fraction and associated metrics."""
     norm_delta_p = float(np.linalg.norm(delta_p))
 
     if is_rel and norm_delta_avg > 1e-12:
-        cos_sim = cosine_similarity(
-            delta_p,
-            delta_avg,
-        )
+        cos_sim = cosine_similarity(delta_p, delta_avg)
 
         proj_scalar = (
-            np.dot(delta_p, delta_avg)
-            / (norm_delta_avg ** 2)
+            np.dot(delta_p, delta_avg) / (norm_delta_avg ** 2)
         )
 
-        delta_specific = (
-            delta_p
-            - proj_scalar * delta_avg
-        )
-
-        norm_delta_specific = float(
-            np.linalg.norm(delta_specific)
-        )
+        delta_specific = delta_p - proj_scalar * delta_avg
+        norm_delta_specific = float(np.linalg.norm(delta_specific))
 
         frac_systematic = (
             float(cos_sim ** 2)
             if norm_delta_p > 1e-12
             else np.nan
         )
-
     else:
         cos_sim = np.nan
         norm_delta_specific = np.nan
         frac_systematic = np.nan
 
-    return cos_sim, norm_delta_p, norm_delta_specific, frac_systematic
+    return (
+        cos_sim,
+        norm_delta_p,
+        norm_delta_specific,
+        frac_systematic,
+    )
 
 
 def score_perturbation(
@@ -116,6 +90,13 @@ def score_perturbation(
     is_rel,
     gene_ids,
 ):
+    """
+    Score a perturbation and calculate the original vectorized
+    leave-one-gene-out influence scores.
+
+    The gene-level calculation is deliberately preserved:
+        influence_g = phi_before - phi_without_gene_g
+    """
     condition = str(condition)
     n_stim = int(n_stim)
 
@@ -124,36 +105,41 @@ def score_perturbation(
 
     parts = condition.split("|")
 
-    if ds_name == 'tahoe100m':
+    if ds_name == "tahoe100m":
         if len(parts) != 3:
-            raise ValueError(f"Unexpected condition format: {condition}")
+            raise ValueError(
+                f"Unexpected condition format: {condition}"
+            )
         context, drug, dosage = parts
-        perturbation = f'{drug}|{dosage}'
+        perturbation = f"{drug}|{dosage}"
     else:
+        if len(parts) != 2:
+            raise ValueError(
+                f"Unexpected condition format: {condition}"
+            )
         context, perturbation = parts
 
     delta_p = np.asarray(delta_p, dtype=np.float64)
     delta_avg = np.asarray(delta_avg, dtype=np.float64)
 
-    # Calculate shared quantities
     dot_pa = np.dot(delta_p, delta_avg)
     norm_p_sq = np.dot(delta_p, delta_p)
     norm_a_sq = norm_delta_avg ** 2
-
     norm_delta_p = np.sqrt(norm_p_sq)
 
-    if is_rel and norm_a_sq > 1e-24 and norm_delta_p > 1e-12:
-        cos_sim = dot_pa / (norm_delta_p * norm_delta_avg) \
-            if norm_delta_p > 1e-12 else np.nan
-
+    if (
+        is_rel
+        and norm_a_sq > 1e-24
+        and norm_delta_p > 1e-12
+    ):
+        cos_sim = dot_pa / (norm_delta_p * norm_delta_avg)
         frac_systematic = cos_sim ** 2
 
-        norm_delta_specific = np.sqrt(max(
-            norm_p_sq - dot_pa**2 / norm_a_sq,
-            0.0
-        ))
+        norm_delta_specific = np.sqrt(
+            max(norm_p_sq - dot_pa ** 2 / norm_a_sq, 0.0)
+        )
 
-        # Leave-one-gene-out calculations
+        # Original vectorized leave-one-gene-out calculation.
         dot_without = np.empty_like(delta_p)
         np.multiply(delta_p, delta_avg, out=dot_without)
         np.subtract(dot_pa, dot_without, out=dot_without)
@@ -169,10 +155,14 @@ def score_perturbation(
         np.maximum(p_without, 0.0, out=p_without)
         np.maximum(a_without, 0.0, out=a_without)
 
-        valid = (p_without > 1e-24) & (a_without > 1e-24)
-        np.multiply(p_without, a_without, out=p_without)
+        valid = (
+            (p_without > 1e-24)
+            & (a_without > 1e-24)
+        )
 
+        np.multiply(p_without, a_without, out=p_without)
         np.square(dot_without, out=dot_without)
+
         np.divide(
             dot_without,
             p_without,
@@ -181,7 +171,9 @@ def score_perturbation(
         )
 
         influences = np.full(len(gene_ids), np.nan)
-        influences[valid] = frac_systematic - dot_without[valid]
+        influences[valid] = (
+            frac_systematic - dot_without[valid]
+        )
 
     else:
         cos_sim = np.nan
@@ -206,102 +198,318 @@ def score_perturbation(
     return row, influences, valid
 
 
+def _is_significant(series):
+    """Interpret common CSV boolean representations."""
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False)
+
+    return (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .isin(["true", "1", "yes", "y"])
+    )
+
+
+def _merge_accumulator_rows(target, source):
+    """Merge additive accumulator summaries keyed by group/gene ID."""
+    for key, values in source.items():
+        if key not in target:
+            target[key] = {
+                field: value
+                for field, value in values.items()
+                if field != "cell_lines"
+            }
+            target[key]["cell_lines"] = set(values.get("cell_lines", set()))
+            continue
+
+        existing = target[key]
+
+        for field, value in values.items():
+            if field == "cell_lines":
+                existing["cell_lines"].update(value)
+            elif field == "gene_ids":
+                existing["gene_ids"] = sorted(
+                    set(existing.get("gene_ids", [])) | set(value)
+                )
+            else:
+                existing[field] += value
+
+
+def _summarize_group_rows(group_rows, group_name):
+    """Convert group accumulator output into a summary DataFrame."""
+    rows = []
+
+    for group_id, values in group_rows.items():
+        row = summarize_perturbation_influence(group_id, values)
+
+        row["group_id"] = group_id
+        row["gene_ids"] = ";".join(
+            str(gene) for gene in values.get("gene_ids", [])
+        )
+        row["cell_lines"] = ";".join(
+            sorted(values.get("cell_lines", set()))
+        )
+        row["group_type"] = group_name
+
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # Group IDs are pathway terms or the union label, not gene token IDs.
+    return df.drop(columns=["token_id"], errors="ignore")
+
+
 class SystematicStep(BaseSystematicStep):
 
-    def __init__(self, args: argparse.Namespace, regression: bool = False) -> None:
-        """Initializer."""
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        regression: bool = False,
+    ) -> None:
         super().__init__(args=args)
 
         if regression:
-            self.datasets = list(CELLULAR_DATASETS.keys())
+            # Keep the dataset selection supplied by the base pipeline.
+            self.datasets = getattr(
+                self, "datasets", ["tahoe100m"]
+            )
         else:
-            self.datasets = ['tahoe100m']
+            self.datasets = ["tahoe100m"]
 
         self.regression = regression
 
-        # load GSEA results, if provided
-        self.gsea_global_axis, self.gsea_moa_axis = None, None
+        # Keep both existing CLI arguments.
+        self.gsea_global_path = args.gsea_global_shared_axis_hallmark
+        self.gsea_moa_path = args.gsea_moa_shared_axis_hallmark
 
-        if args.gsea_global_shared_axis_hallmark:
-            self.gsea_global_axis = GSEAInfluenceAnnotator(
-                args.gsea_global_shared_axis_hallmark
+    def load_moa_gsea_pathways(self, mode):
+        """
+        Load significant pathway results from the MOA GSEA file.
+
+        Expected columns:
+            mode, cell_line, moa, term, lead_genes, significant
+
+        lead_genes is expected to be semicolon-separated gene symbols.
+        """
+        required = [
+            "mode",
+            "cell_line",
+            "moa",
+            "term",
+            "lead_genes",
+            "significant",
+        ]
+
+        if self.gsea_moa_path is None:
+            log.info("No MOA GSEA file supplied; skipping group influence analyses")
+            return pd.DataFrame(columns=required)
+
+        if not self.gsea_moa_path.is_file():
+            log.warning(
+                "MOA GSEA file does not exist: %s",
+                self.gsea_moa_path,
             )
-        if args.gsea_moa_shared_axis_hallmark:
-            self.gsea_moa_axis = GSEAInfluenceAnnotator(
-                args.gsea_moa_shared_axis_hallmark, moa_targets=self.load_moa_targets()
+            return pd.DataFrame(columns=required)
+
+        df = pd.read_csv(self.gsea_moa_path)
+
+        missing = set(required) - set(df.columns)
+        if missing:
+            raise ValueError(
+                f"MOA GSEA file is missing required columns: {sorted(missing)}"
             )
 
-    def summarize_influence(
+        df = df.loc[
+            (df["mode"].astype(str) == str(mode))
+            # & _is_significant(df["significant"])
+        ].copy()
+
+        df["lead_genes"] = df["lead_genes"].fillna("").astype(str)
+        df["term"] = df["term"].fillna("").astype(str)
+        df["moa"] = df["moa"].fillna("").astype(str)
+        df["cell_line"] = df["cell_line"].fillna("").astype(str)
+
+        return df
+
+    def build_pathway_masks(
         self,
-        gene_rows: dict[str, Any],
-        n_genes_per_grouping: int = 200,
-        extra_fields: dict[str, Any] | None = None,
-        normalization_mode: str | None = None,
-        gsea_axis_mode: str | None = None,
-    ) -> pd.DataFrame:
+        cell_line_id,
+        gene_ids,
+        mode,
+        gsea_df,
+    ):
         """
-        Summarize the influence scores for each perturbation group
-        and add gene metadata.
+        Build pathway and union masks aligned to delta_p gene ordering.
+
+        Returns
+        -------
+        pathway_data:
+            dict keyed by MOA. Each entry contains pathway IDs, gene IDs,
+            and a boolean pathway mask.
         """
-        influence_summary = []
+        if gsea_df.empty:
+            return {}
+
+        # Match GSEA cell lines to the cell line currently being processed.
+        cell_mask = (
+            gsea_df["cell_line"].astype(str)
+            == str(cell_line_id)
+        )
+        cell_df = gsea_df.loc[cell_mask]
+
+        if cell_df.empty:
+            return {}
+
+        metadata = self.gene_metadata[
+            ["gene_symbol", "token_id"]
+        ].dropna().drop_duplicates()
+
+        symbol_to_token = dict(
+            zip(
+                metadata["gene_symbol"].astype(str),
+                metadata["token_id"],
+            )
+        )
+
+        token_to_index = {
+            token.item() if hasattr(token, "item") else token: i
+            for i, token in enumerate(gene_ids)
+        }
+
+        pathway_data = {}
+
+        for moa, moa_df in cell_df.groupby("moa", sort=False):
+            pathway_gene_sets = {}
+
+            for _, pathway_row in moa_df.iterrows():
+                term = str(pathway_row["term"]).strip()
+                if not term:
+                    continue
+
+                symbols = {
+                    symbol.strip()
+                    for symbol in str(pathway_row["lead_genes"]).split(";")
+                    if symbol.strip()
+                }
+
+                tokens = {
+                    symbol_to_token[symbol]
+                    for symbol in symbols
+                    if symbol in symbol_to_token
+                }
+
+                indices = {
+                    token_to_index[
+                        token.item() if hasattr(token, "item") else token
+                    ]
+                    for token in tokens
+                    if (
+                        token.item() if hasattr(token, "item") else token
+                    ) in token_to_index
+                }
+
+                # Merge duplicate pathway terms rather than overwriting them.
+                pathway_gene_sets.setdefault(term, set()).update(indices)
+
+            if not pathway_gene_sets:
+                continue
+
+            group_ids = list(pathway_gene_sets.keys())
+            group_gene_ids = []
+            pathway_mask = np.zeros(
+                (len(group_ids), len(gene_ids)),
+                dtype=bool,
+            )
+
+            for i, group_id in enumerate(group_ids):
+                indices = sorted(pathway_gene_sets[group_id])
+                pathway_mask[i, indices] = True
+                group_gene_ids.append(
+                    [gene_ids[index].item() for index in indices]
+                )
+
+            # Union of all significant pathway lead genes for this MOA.
+            union_indices = sorted(
+                set().union(*pathway_gene_sets.values())
+            )
+            union_mask = np.zeros(
+                (1, len(gene_ids)),
+                dtype=bool,
+            )
+            union_mask[0, union_indices] = True
+
+            union_gene_ids = [
+                gene_ids[index].item()
+                for index in union_indices
+            ]
+
+            pathway_data[moa] = {
+                "group_ids": group_ids,
+                "group_gene_ids": group_gene_ids,
+                "mask": pathway_mask,
+                "union_gene_ids": union_gene_ids,
+                "union_mask": union_mask,
+            }
+
+        return pathway_data
+
+    def summarize_gene_rows(
+        self,
+        gene_rows,
+        extra_fields=None,
+        n_genes_per_grouping=200,
+    ):
+        """Summarize gene-level LOO results and attach gene metadata."""
+        rows = []
 
         for gene_id, influence in gene_rows.items():
-            row = summarize_perturbation_influence(gene_id, influence)
-            if extra_fields:
-                row.update(extra_fields)
+            row = summarize_perturbation_influence(
+                gene_id, influence
+            )
+            rows.append(row)
 
-            influence_summary.append(row)
+        if not rows:
+            return pd.DataFrame()
 
-        df = pd.DataFrame(influence_summary).merge(
-            self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
-            on='token_id',
-            how='left',
-            validate='many_to_one',
+        df = pd.DataFrame(rows)
+
+        df = df.merge(
+            self.gene_metadata[
+                ["token_id", "gene_symbol", "ensembl_id"]
+            ],
+            on="token_id",
+            how="left",
+            validate="many_to_one",
         )
-        # Rank genes by absolute influence (1 = highest influence)
-        df['influence_rank'] = (
-            df['mean_abs_influence']
-            .rank(method='min', ascending=False)
+
+        df["influence_rank"] = (
+            df["mean_abs_influence"]
+            .rank(method="min", ascending=False)
             .astype(int)
         )
 
-        # if provided GSEA axis mode is not None, add influence score to
-        # corresponding lead genes
-        if gsea_axis_mode is not None:
-            cell_line_id = extra_fields.get('cell_line_id') if extra_fields else None
-            moa = extra_fields.get('moa') if extra_fields else None
+        if extra_fields:
+            for key, value in extra_fields.items():
+                df[key] = value
 
-            # both require cell_line_id
-            if cell_line_id is None:
-                raise ValueError(
-                    f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
-                )
-
-            influence_lookup = df.set_index('gene_symbol').to_dict('index')
-            if gsea_axis_mode == 'cell_line_id' and self.gsea_global_axis is not None:
-                self.gsea_global_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id)
-
-            elif gsea_axis_mode == 'moa' and self.gsea_moa_axis is not None:
-                # requires moa
-                if moa is None:
-                    raise ValueError(
-                        f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
-                    )
-                self.gsea_moa_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id, moa)
-
-        # report out top genes
-        return df.nlargest(n_genes_per_grouping, 'mean_abs_influence')
+        return df.nlargest(
+            n_genes_per_grouping,
+            "mean_abs_influence",
+        )
 
     def summarize_tahoe100m_by_group(
         self,
-        mode: str,
-        df: pd.DataFrame,
-        cur_time: str,
-    ) -> None:
+        mode,
+        df,
+        cur_time,
+    ):
         """Summarize Tahoe-100m merged results by specific groupings."""
         df = df.copy()
 
-        # Extract cell_line_id, drug, and dosage from condition.
         parts = df["condition"].astype(str).str.split(
             "|", regex=False, expand=True
         )
@@ -309,14 +517,14 @@ class SystematicStep(BaseSystematicStep):
         if parts.shape[1] != 3:
             raise ValueError(
                 "Expected 3 condition components "
-                f"(cell_line|drug|dosage), found {parts.shape[1]}"
+                "(cell_line|drug|dosage), "
+                f"found {parts.shape[1]}"
             )
 
         df["cell_line_id"] = parts[0]
         df["drug"] = parts[1]
         df["dosage"] = parts[2]
 
-        # Select available reliability and ceiling columns
         rel_col = next(
             (c for c in REL_COL_FALLBACKS if c in df.columns),
             None,
@@ -333,24 +541,17 @@ class SystematicStep(BaseSystematicStep):
             None,
         )
 
-        # Load drug mappings for MOA grouping
         moa_mapping = self.load_drug_moa_mapping()
-
-        # Map each drug to its corresponding MOA
         df["moa"] = (
-            df["drug"]
-            .astype(str)
-            .str.strip()
-            .map(moa_mapping)
+            df["drug"].astype(str).str.strip().map(moa_mapping)
         )
 
-        # Define the groupings
         groupings = {
             "cell_line_id": ["cell_line_id"],
             "drug": ["drug"],
             "dosage": ["dosage"],
             "drug_x_dosage": ["drug", "dosage"],
-            "moa": ['moa']
+            "moa": ["moa"],
         }
 
         for grouping_name, group_cols in groupings.items():
@@ -366,12 +567,10 @@ class SystematicStep(BaseSystematicStep):
             if ceiling_col:
                 agg[ceiling_col] = ["mean", "median"]
 
-            summary = (
-                df.groupby(group_cols, dropna=False)
-                .agg(agg)
-            )
+            summary = df.groupby(
+                group_cols, dropna=False
+            ).agg(agg)
 
-            # Flatten the MultiIndex columns.
             summary.columns = [
                 "_".join(str(x) for x in col if x)
                 for col in summary.columns
@@ -381,46 +580,40 @@ class SystematicStep(BaseSystematicStep):
             summary = summary.rename(columns={
                 "condition_nunique": "n_conditions",
                 "cos_sim_count": "n_scored",
-                "cos_sim_mean": "cos_sim_mean",
-                "cos_sim_std": "cos_sim_std",
-                "cos_sim_median": "cos_sim_median",
                 "n_stim_cells_sum": "total_stim_cells",
                 "n_stim_cells_median": "median_stim_cells",
             })
 
-            # Add 2D classification counts and proportions
             if "triage_2d" in df.columns:
                 categories = ["Unreliable", "Shared", "Specific"]
+                condition_keys = ["condition", *group_cols]
 
-                condition_keys = [
-                    "condition",
-                    *group_cols,
-                ]
                 condition_triage = df[
                     condition_keys + ["triage_2d"]
                 ].drop_duplicates()
 
                 labels_per_condition = (
-                    condition_triage
-                    .groupby(condition_keys, dropna=False)["triage_2d"]
-                    .nunique(dropna=False)
+                    condition_triage.groupby(
+                        condition_keys, dropna=False
+                    )["triage_2d"].nunique(dropna=False)
                 )
+
                 if (labels_per_condition > 1).any():
                     log.warning(
-                        "%d conditions have conflicting triage_2d labels "
+                        "%d conditions have conflicting triage labels "
                         "for grouping %s",
                         int((labels_per_condition > 1).sum()),
                         grouping_name,
                     )
 
-                # Only count conditions with exactly one valid category
                 condition_triage = condition_triage[
                     condition_triage["triage_2d"].isin(categories)
                 ].drop_duplicates(condition_keys)
 
                 counts = (
-                    condition_triage
-                    .groupby(group_cols, dropna=False)["triage_2d"]
+                    condition_triage.groupby(
+                        group_cols, dropna=False
+                    )["triage_2d"]
                     .value_counts()
                     .unstack(fill_value=0)
                     .reindex(columns=categories, fill_value=0)
@@ -442,25 +635,12 @@ class SystematicStep(BaseSystematicStep):
                         / counts["n_classified"].replace(0, np.nan)
                     )
 
-                summary = summary.drop(
-                    columns=[
-                        c for c in [
-                            "n_Unreliable", "n_Shared", "n_Specific",
-                            "n_classified", "frac_Unreliable",
-                            "frac_Shared", "frac_Specific",
-                        ]
-                        if c in summary.columns
-                    ],
-                    errors="ignore",
-                )
-
                 summary = summary.merge(
                     counts.reset_index(),
                     on=group_cols,
                     how="left",
                 )
 
-            # Standardize reliability and ceiling column names
             if rel_col:
                 summary = summary.rename(columns={
                     f"{rel_col}_mean": "reliability_mean",
@@ -473,100 +653,119 @@ class SystematicStep(BaseSystematicStep):
                     f"{ceiling_col}_median": "ceiling_median",
                 })
 
-            # Save one CSV for this grouping.
             out_path = (
                 self.output_dir
                 / f"systema_{mode}_cc_reliability_2d_summary_tahoe100m_"
                   f"by_{grouping_name}_{cur_time}.csv"
             )
-
             summary.to_csv(out_path, index=False)
             log.info("Saved %s summary: %s", grouping_name, out_path)
 
     def compute_systema_metrics(
-        self, ds_name: str, mode: str, delta_p_dir: Path, reliability_dir: Path, cur_time: str
-    ) -> pd.DataFrame:
-        """
-        Compute Systema's systematic variation metric for all (context, perturbation)
-        conditions in a cellular context dataset.
-
-        Key properties of this implementation:
-          • δ_avg is computed PER CONTEXT (not global)
-          • δ_avg uses cells from RELIABLE perts in that context only
-          • cos_sim is computed only for reliable perts; unreliable perts get NaN.
-
-        Returns
-        -------
-        df : DataFrame with columns:
-            dataset, condition, context, perturbation, n_stim_cells,
-            cos_sim, norm_delta_p, norm_delta_avg, norm_delta_specific,
-            frac_systematic_var
-        """
+        self,
+        ds_name,
+        mode,
+        delta_p_dir,
+        reliability_dir,
+        cur_time,
+    ):
+        """Compute baseline Systema metrics and all influence analyses."""
         t_start = time.time()
-        log.info(f"Computing systema metrics from {delta_p_dir}")
+        log.info("Computing Systema metrics from %s", delta_p_dir)
 
-        # ---- Load reliability (used to filter which perts define δ_avg) ----
-        log.info("  [0/3] Loading reliability data for stim data...")
+        log.info("[0/3] Loading reliability data...")
         reliable_conds, all_conds = load_reliable_conditions(
             ds_name, reliability_dir, self.clusters
         )
 
-        # ---- Load precomputed delta values for each (reliable) cell line ----
-        log.info("  [1/3] Loading precomputed delta_p values for reliable data...")
+        log.info("[1/3] Loading delta_p values...")
         delta_p_data = load_delta_p_results(
             ds_name=ds_name,
             delta_p_dir=delta_p_dir,
             target_conds=all_conds,
-            clusters=self.clusters
+            clusters=self.clusters,
         )
 
-        # ---- Compute Systema per cell line ----
-        log.info("  [2/3] Computing cosine similarities and influence scores per cell line...")
+        log.info("[2/3] Computing metrics and influence scores...")
+
+        gsea_df = self.load_moa_gsea_pathways(mode)
+        drug_to_moa = self.load_drug_moa_mapping()
+
         all_rows = []
         all_influence_rows_by_cell_line = {}
         all_influence_rows_by_moa = {}
-        drug_to_moa = self.load_drug_moa_mapping()
 
-        # keep track of influence by cell_line/MOA
-        by_cell_line_moa_dir = self.output_dir / 'influence_by_cell_line_moa'
-        by_cell_line_moa_dir.mkdir(parents=True, exist_ok=True)
+        # New group-level results are merged across cell lines.
+        all_pathway_rows_by_moa = {}
+        all_union_rows_by_moa = {}
+
+        by_cell_line_moa_dir = (
+            self.output_dir / "influence_by_cell_line_moa"
+        )
+        by_cell_line_moa_dir.mkdir(
+            parents=True, exist_ok=True
+        )
 
         total_conditions = 0
         total_skipped = 0
 
         for cell_line_id, data in tqdm(
             delta_p_data.items(),
-            desc='Processing cell lines',
-            unit='cell_line'
+            desc="Processing cell lines",
+            unit="cell_line",
         ):
             conditions = data["conditions"]
             n_stim_cells = data["n_stim_cells"]
             delta_p_all = data["delta_p"]
-
             n_perts = len(conditions)
 
             if n_perts == 0:
-                log.info(
-                    f"Cell line '{cell_line_id}': no perturbations, skipping"
-                )
                 continue
 
-            # gene accumulator for influence scores
-            gene_ids = load_gene_ids(self.ctrl_gene_expressions_dir, cell_line_id)
-            acc = InfluenceAccumulator(gene_ids)
-            moa_accs = {}
+            gene_ids = np.asarray(
+                load_gene_ids(
+                    self.ctrl_gene_expressions_dir,
+                    cell_line_id,
+                )
+            )
 
-            # Group conditions by context.
-            if ds_name == 'tahoe100m':
-                contexts = np.asarray([
-                    condition.split("|")[0]
-                    for condition in conditions
-                ])
-            else:
-                contexts = np.asarray([
-                    condition.split("|")[0]
-                    for condition in conditions
-                ])
+            if delta_p_all.shape[1] != len(gene_ids):
+                raise ValueError(
+                    f"{cell_line_id}: delta_p has "
+                    f"{delta_p_all.shape[1]} genes but load_gene_ids "
+                    f"returned {len(gene_ids)} IDs"
+                )
+
+            # Original leave-one-gene-out accumulators.
+            gene_acc = InfluenceAccumulator(gene_ids)
+            moa_gene_accs = {}
+
+            # New pathway and union accumulators for this cell line.
+            pathway_data = self.build_pathway_masks(
+                cell_line_id,
+                gene_ids,
+                mode,
+                gsea_df,
+            )
+
+            pathway_accs = {}
+            union_accs = {}
+
+            for moa, group_data in pathway_data.items():
+                pathway_accs[moa] = GroupInfluenceAccumulator(
+                    group_data["group_ids"],
+                    group_data["group_gene_ids"],
+                )
+
+                union_accs[moa] = GroupInfluenceAccumulator(
+                    ["all_significant_pathway_lead_genes"],
+                    [group_data["union_gene_ids"]],
+                )
+
+            contexts = np.asarray([
+                str(condition).split("|")[0]
+                for condition in conditions
+            ])
 
             for context_group in np.unique(contexts):
                 context_mask = contexts == context_group
@@ -575,253 +774,387 @@ class SystematicStep(BaseSystematicStep):
                 context_weights = n_stim_cells[context_mask]
                 context_deltas = delta_p_all[context_mask]
 
-                # ---- Step 1: identify reliable perturbations ----
-                reliable_mask = np.array(
-                    [condition in reliable_conds for condition in context_conditions],
-                    dtype=bool,
-                )
-                n_reliable = reliable_mask.sum()
+                reliable_mask = np.asarray([
+                    condition in reliable_conds
+                    for condition in context_conditions
+                ], dtype=bool)
 
-                # ---- Step 2: δ_avg from reliable perturbations ----
+                n_reliable = int(reliable_mask.sum())
+
                 if n_reliable == 0:
                     delta_avg = np.zeros(
                         delta_p_all.shape[1],
                         dtype=np.float64,
                     )
                     norm_delta_avg = 0.0
-                else:
-                    reliable_deltas = context_deltas[reliable_mask]
-                    reliable_weights = context_weights[reliable_mask]
+                    continue
 
-                    # Cell-weighted average perturbation effect.
-                    delta_avg = np.average(
-                        reliable_deltas.astype(np.float64),
-                        axis=0,
-                        weights=reliable_weights,
+                reliable_deltas = context_deltas[reliable_mask]
+                reliable_weights = context_weights[reliable_mask]
+
+                delta_avg = np.average(
+                    reliable_deltas.astype(np.float64),
+                    axis=0,
+                    weights=reliable_weights,
+                )
+                norm_delta_avg = float(np.linalg.norm(delta_avg))
+
+                for condition, n_stim, delta_p, is_rel in zip(
+                    context_conditions,
+                    context_weights,
+                    context_deltas,
+                    reliable_mask,
+                ):
+                    row, influences, valid = score_perturbation(
+                        ds_name,
+                        condition,
+                        n_perts,
+                        n_stim,
+                        delta_p,
+                        delta_avg,
+                        norm_delta_avg,
+                        is_rel,
+                        gene_ids,
                     )
 
-                    norm_delta_avg = float(np.linalg.norm(delta_avg))
+                    if row is None:
+                        total_skipped += 1
+                        continue
 
-                    # ---- Step 3: score each perturbation ----
-                    for condition, n_stim, delta_p, is_rel in zip(
-                        context_conditions,
-                        context_weights,
-                        context_deltas,
-                        reliable_mask,
-                    ):
-                        row, influences, valid = score_perturbation(
-                            ds_name,
-                            condition,
-                            n_perts,
-                            n_stim,
-                            delta_p,
-                            delta_avg,
-                            norm_delta_avg,
-                            is_rel,
-                            gene_ids,
+                    total_conditions += 1
+                    all_rows.append(row)
+
+                    # Preserve original LOO gene analysis.
+                    if influences is None or valid is None:
+                        continue
+
+                    gene_acc.accumulate(
+                        cell_line_id,
+                        gene_ids,
+                        delta_p,
+                        influences,
+                        valid,
+                        row["frac_systematic_var"],
+                    )
+
+                    parts = str(condition).split("|")
+                    drug = parts[1] if len(parts) > 1 else None
+                    moa = drug_to_moa.get(drug)
+
+                    if moa not in moa_gene_accs:
+                        moa_gene_accs[moa] = InfluenceAccumulator(
+                            gene_ids
                         )
 
-                        if row is None:
-                            total_skipped += 1
-                            continue
+                    moa_gene_accs[moa].accumulate(
+                        cell_line_id,
+                        gene_ids,
+                        delta_p,
+                        influences,
+                        valid,
+                        row["frac_systematic_var"],
+                    )
 
-                        total_conditions += 1
-                        all_rows.append(row)
+                    # New pathway and union analyses.
+                    if moa not in pathway_data:
+                        continue
 
-                        if influences is not None and valid is not None:
-                            acc.accumulate(
-                                cell_line_id,
-                                gene_ids,
-                                delta_p,
-                                influences,
-                                valid,
-                                row['frac_systematic_var'],
-                            )
+                    group_data = pathway_data[moa]
 
-                            # also group by MOA
-                            moa = drug_to_moa.get(condition.split("|")[1])
-                            if moa not in moa_accs:
-                                moa_accs[moa] = InfluenceAccumulator(gene_ids)
+                    pathway_influences = (
+                        GroupInfluenceAccumulator.calculate_group_influences(
+                            delta_p,
+                            delta_avg,
+                            group_data["mask"],
+                        )
+                    )
 
-                            moa_accs[moa].accumulate(
-                                cell_line_id,
-                                gene_ids,
-                                delta_p,
-                                influences,
-                                valid,
-                                row['frac_systematic_var'],
-                            )
+                    pathway_valid = np.isfinite(pathway_influences)
+                    n_pathways = len(group_data["group_ids"])
 
-            # aggregate accumulator results by cell line and MOA
-            top_genes_by_cell_line_moa = pd.DataFrame()
+                    pathway_accs[moa].accumulate(
+                        cell_line_id,
+                        group_data["group_ids"],
+                        delta_p,
+                        group_data["mask"],
+                        pathway_influences,
+                        pathway_valid,
+                        np.full(
+                            n_pathways,
+                            row["frac_systematic_var"],
+                        ),
+                    )
 
-            # by cell line
-            all_influence_rows_by_cell_line[cell_line_id] = acc.finalize_by_gene()
+                    union_influence = (
+                        GroupInfluenceAccumulator.calculate_group_influences(
+                            delta_p,
+                            delta_avg,
+                            group_data["union_mask"],
+                        )
+                    )
 
-            # by MOA
-            for moa, moa_acc in moa_accs.items():
+                    union_accs[moa].accumulate(
+                        cell_line_id,
+                        ["all_significant_pathway_lead_genes"],
+                        delta_p,
+                        group_data["union_mask"],
+                        union_influence,
+                        np.isfinite(union_influence),
+                        np.asarray([
+                            row["frac_systematic_var"]
+                        ]),
+                    )
+
+            # Preserve original cell-line gene-level output.
+            cell_line_gene_rows = gene_acc.finalize_by_gene()
+            all_influence_rows_by_cell_line[cell_line_id] = (
+                cell_line_gene_rows
+            )
+
+            # Preserve original MOA gene-level accumulation.
+            for moa, moa_acc in moa_gene_accs.items():
                 moa_gene_rows = moa_acc.finalize_by_gene()
 
                 if moa not in all_influence_rows_by_moa:
                     all_influence_rows_by_moa[moa] = {}
 
-                for gene_id, influence in moa_gene_rows.items():
-
-                    if gene_id not in all_influence_rows_by_moa[moa]:
-                        all_influence_rows_by_moa[moa][gene_id] = {
-                            key: 0
-                            for key in influence
-                            if key != 'cell_lines'
-                        }
-                        all_influence_rows_by_moa[moa][gene_id]['cell_lines'] = set()
-
-                    global_gene = all_influence_rows_by_moa[moa][gene_id]
-
-                    for key, value in influence.items():
-                        if key == 'cell_lines':
-                            global_gene['cell_lines'].update(value)
-                        else:
-                            global_gene[key] += value
-
-                # save by cell line x MOA
-                cell_line_moa_df = self.summarize_influence(
+                _merge_accumulator_rows(
+                    all_influence_rows_by_moa[moa],
                     moa_gene_rows,
-                    extra_fields={'cell_line_id': cell_line_id, 'moa': moa},
-                    normalization_mode=mode,
-                    gsea_axis_mode='moa',
                 )
 
-                top_genes_by_cell_line_moa = pd.concat(
-                    [top_genes_by_cell_line_moa, cell_line_moa_df], ignore_index=True
+                # cell_line_moa_df = self.summarize_gene_rows(
+                #     moa_gene_rows,
+                #     extra_fields={
+                #         "cell_line_id": cell_line_id,
+                #         "moa": moa,
+                #     },
+                # )
+
+                # cell_line_moa_df.to_csv(
+                #     by_cell_line_moa_dir
+                #     / f"{mode}_{cell_line_id}_moa_{moa}_"
+                #       f"top200_influential_genes_{cur_time}.csv",
+                #     index=False,
+                # )
+
+            # Merge pathway results across cell lines.
+            for moa, pathway_acc in pathway_accs.items():
+                pathway_rows = pathway_acc.finalize_by_group()
+
+                if moa not in all_pathway_rows_by_moa:
+                    all_pathway_rows_by_moa[moa] = {}
+
+                _merge_accumulator_rows(
+                    all_pathway_rows_by_moa[moa],
+                    pathway_rows,
                 )
 
-            top_genes_by_cell_line_moa.to_csv(
-                by_cell_line_moa_dir / f'{mode}_{cell_line_id}_top200_influential_genes_{cur_time}.csv',
-                index=False,
-            )
-            del top_genes_by_cell_line_moa
+            # Merge union results across cell lines.
+            for moa, union_acc in union_accs.items():
+                union_rows = union_acc.finalize_by_group()
 
-        # merge gene influence across cell lines, and also save top genes per cell line
-        global_influence_rows = {}
-        top_genes_by_cell_line_df = pd.DataFrame()
+                if moa not in all_union_rows_by_moa:
+                    all_union_rows_by_moa[moa] = {}
 
-        for cell_line_id, gene_rows in all_influence_rows_by_cell_line.items():
+                _merge_accumulator_rows(
+                    all_union_rows_by_moa[moa],
+                    union_rows,
+                )
 
-            # global accumulation
-            for gene_id, influence in gene_rows.items():
+        # ------------------------------------------------------------
+        # Original gene-level outputs.
+        # ------------------------------------------------------------
+        global_gene_rows = {}
 
-                if gene_id not in global_influence_rows:
-                    global_influence_rows[gene_id] = {
-                        key: 0
-                        for key in influence
-                        if key != 'cell_lines'
-                    }
-                    global_influence_rows[gene_id]['cell_lines'] = set()
-
-                global_gene = global_influence_rows[gene_id]
-
-                # Sum all additive metrics
-                for key, value in influence.items():
-                    if key == 'cell_lines':
-                        global_gene['cell_lines'].update(value)
-                    else:
-                        global_gene[key] += value
-
-            # rank genes within this cell line
-            cell_line_df = self.summarize_influence(
+        for gene_rows in all_influence_rows_by_cell_line.values():
+            _merge_accumulator_rows(
+                global_gene_rows,
                 gene_rows,
-                extra_fields={'cell_line_id': cell_line_id},
-                normalization_mode=mode,
-                gsea_axis_mode='cell_line_id'
-            )
-            
-            top_genes_by_cell_line_df = pd.concat(
-                [top_genes_by_cell_line_df, cell_line_df],
-                ignore_index=True,
             )
 
-        del all_influence_rows_by_cell_line
+        top_genes_by_cell_line_df = pd.concat(
+            [
+                self.summarize_gene_rows(
+                    gene_rows,
+                    extra_fields={"cell_line_id": cell_line_id},
+                )
+                for cell_line_id, gene_rows
+                in all_influence_rows_by_cell_line.items()
+                if gene_rows
+            ],
+            ignore_index=True,
+        ) if all_influence_rows_by_cell_line else pd.DataFrame()
 
         top_genes_by_cell_line_df.to_csv(
-            self.output_dir / f'systema_{mode}_top200_influential_genes_by_cell_line_id_{cur_time}.csv',
-            index=False
+            self.output_dir
+            / f"systema_{mode}_top200_influential_genes_"
+              f"by_cell_line_id_{cur_time}.csv",
+            index=False,
         )
-        del top_genes_by_cell_line_df
 
-        # by MOA
-        top_genes_by_moa_df = pd.DataFrame()
-        for moa, gene_rows in all_influence_rows_by_moa.items():
-            moa_df = self.summarize_influence(gene_rows, extra_fields={'moa': moa})
-            top_genes_by_moa_df = pd.concat([top_genes_by_moa_df, moa_df], ignore_index=True)
-
-        del all_influence_rows_by_moa
+        top_genes_by_moa_df = pd.concat(
+            [
+                self.summarize_gene_rows(
+                    gene_rows,
+                    extra_fields={"moa": moa},
+                )
+                for moa, gene_rows in all_influence_rows_by_moa.items()
+                if gene_rows
+            ],
+            ignore_index=True,
+        ) if all_influence_rows_by_moa else pd.DataFrame()
 
         top_genes_by_moa_df.to_csv(
-            self.output_dir / f'systema_{mode}_top200_influential_genes_by_moa_{cur_time}.csv',
-            index=False
+            self.output_dir
+            / f"systema_{mode}_top200_influential_genes_"
+              f"by_moa_{cur_time}.csv",
+            index=False,
         )
-        del top_genes_by_moa_df
 
-        # Build global influence summary
-        influence_df = self.summarize_influence(global_influence_rows, n_genes_per_grouping=1000)
-        del global_influence_rows
-
-        influence_df.to_csv(
-            self.output_dir / f'systema_{mode}_top1000_influential_genes_{cur_time}.csv',
-            index=False
+        global_gene_df = self.summarize_gene_rows(
+            global_gene_rows,
+            n_genes_per_grouping=1000,
         )
-        del influence_df
 
-        # Build DataFrames
+        global_gene_df.to_csv(
+            self.output_dir
+            / f"systema_{mode}_top1000_influential_genes_{cur_time}.csv",
+            index=False,
+        )
+
+        # ------------------------------------------------------------
+        # New pathway-level output: one row per MOA x pathway.
+        # ------------------------------------------------------------
+        pathway_dfs = []
+
+        for moa, group_rows in all_pathway_rows_by_moa.items():
+            df_moa = _summarize_group_rows(
+                group_rows,
+                "pathway",
+            )
+            if df_moa.empty:
+                continue
+
+            df_moa["moa"] = moa
+            df_moa["pathway"] = df_moa["group_id"]
+            pathway_dfs.append(df_moa)
+
+        pathway_summary = (
+            pd.concat(pathway_dfs, ignore_index=True)
+            if pathway_dfs
+            else pd.DataFrame()
+        )
+
+        pathway_summary.to_csv(
+            self.output_dir
+            / f"systema_{mode}_pathway_influence_by_moa_{cur_time}.csv",
+            index=False,
+        )
+
+        # ------------------------------------------------------------
+        # New union-level output: one row per MOA.
+        # ------------------------------------------------------------
+        union_dfs = []
+
+        for moa, group_rows in all_union_rows_by_moa.items():
+            df_moa = _summarize_group_rows(
+                group_rows,
+                "pathway_union",
+            )
+            if df_moa.empty:
+                continue
+
+            df_moa["moa"] = moa
+            union_dfs.append(df_moa)
+
+        union_summary = (
+            pd.concat(union_dfs, ignore_index=True)
+            if union_dfs
+            else pd.DataFrame()
+        )
+
+        union_summary.to_csv(
+            self.output_dir
+            / f"systema_{mode}_all_pathway_lead_gene_union_"
+              f"influence_by_moa_{cur_time}.csv",
+            index=False,
+        )
+
+        log.info(
+            "Saved pathway influence summary with %d rows",
+            len(pathway_summary),
+        )
+        log.info(
+            "Saved pathway-union influence summary with %d rows",
+            len(union_summary),
+        )
+
+        # ------------------------------------------------------------
+        # Baseline Systema results.
+        # ------------------------------------------------------------
         df = pd.DataFrame(all_rows)
-        del all_rows
 
-        if len(df) == 0:
-            raise ValueError(f"  ⚠ No results for Tahoe-100m")
+        if df.empty:
+            raise ValueError("No Systema results were computed")
 
-        # ---- Summary statistics ----
         elapsed_total = time.time() - t_start
-        log.info(f"\n  ── Summary for Tahoe-100m ──")
-        log.info(f"  Conditions computed: {total_conditions}")
-        log.info(f"  Skipped (few cells): {total_skipped}")
-        log.info(f"  cos_sim — mean: {df.cos_sim.mean():.3f} ± {df.cos_sim.std():.3f}, "
-              f"median: {df.cos_sim.median():.3f}")
-        log.info(f"  cos_sim — min: {df.cos_sim.min():.3f}, "
-              f"max: {df.cos_sim.max():.3f}")
-        log.info(f"  frac with cos_sim > 0.5: "
-              f"{(df.cos_sim > 0.5).sum()}/{len(df)} "
-              f"({100*(df.cos_sim > 0.5).mean():.1f}%)")
-        log.info(f"  frac with cos_sim > 0.7: "
-              f"{(df.cos_sim > 0.7).sum()}/{len(df)} "
-              f"({100*(df.cos_sim > 0.7).mean():.1f}%)")
 
-        # Per-context breakdown
-        log.info(f"\n  Per-context cos_sim (median):")
-        for ctx, gdf in df.groupby("context"):
-            log.info(f"    {ctx:20s}: {gdf.cos_sim.median():.3f} "
-                  f"(n={len(gdf)}, n_perts_in_ctx={gdf.n_perts_in_context.iloc[0]})")
+        log.info("\n  ── Summary for %s ──", ds_name)
+        log.info("  Conditions computed: %d", total_conditions)
+        log.info("  Skipped (few cells): %d", total_skipped)
+        log.info(
+            "  cos_sim — mean: %.3f ± %.3f, median: %.3f",
+            df.cos_sim.mean(),
+            df.cos_sim.std(),
+            df.cos_sim.median(),
+        )
+        log.info(
+            "  cos_sim — min: %.3f, max: %.3f",
+            df.cos_sim.min(),
+            df.cos_sim.max(),
+        )
+        log.info(
+            "  frac with cos_sim > 0.5: %d/%d (%.1f%%)",
+            (df.cos_sim > 0.5).sum(),
+            len(df),
+            100 * (df.cos_sim > 0.5).mean(),
+        )
+        log.info(
+            "  frac with cos_sim > 0.7: %d/%d (%.1f%%)",
+            (df.cos_sim > 0.7).sum(),
+            len(df),
+            100 * (df.cos_sim > 0.7).mean(),
+        )
 
-        log.info(f"  Total time: {elapsed_total:.1f}s")
+        log.info("  Per-context cos_sim (median):")
+        for ctx, group_df in df.groupby("context"):
+            log.info(
+                "    %s: %.3f (n=%d, n_perts_in_ctx=%d)",
+                ctx,
+                group_df.cos_sim.median(),
+                len(group_df),
+                group_df.n_perts_in_context.iloc[0],
+            )
+
+        log.info("  Total time: %.1fs", elapsed_total)
         return df
 
     def merge_with_reliability(
         self,
-        ds_name: str,
-        systema_df: pd.DataFrame,
-        reliability_dir: Path,
-    ) -> pd.DataFrame:
-        """
-        Merge Systema cos_sim with pre-computed split-half reliability
-        from the cellular context reliability script.
-
-        Merges on the 'condition' column (format: "context|perturbation").
-        """
+        ds_name,
+        systema_df,
+        reliability_dir,
+    ):
+        """Merge Systema cosine similarity with split-half reliability."""
         rel_df = get_combined_cluster_split_half_reliability_df(
-            reliability_dir, self.clusters, ds_name=ds_name
+            reliability_dir,
+            self.clusters,
+            ds_name=ds_name,
         )
-        log.info(f"  Loaded reliability: {len(rel_df)} conditions")
 
-        # Merge on condition (= "context|perturbation")
+        log.info("Loaded reliability: %d conditions", len(rel_df))
+
         merged = systema_df.merge(
             rel_df,
             on="condition",
@@ -829,83 +1162,119 @@ class SystematicStep(BaseSystematicStep):
             suffixes=("", "_rel"),
         )
 
-        log.info(f"  Merged: {len(merged)} conditions "
-              f"(Systema: {len(systema_df)}, Reliability: {len(rel_df)})")
+        log.info(
+            "Merged: %d conditions (Systema: %d, Reliability: %d)",
+            len(merged),
+            len(systema_df),
+            len(rel_df),
+        )
 
         if len(merged) < len(systema_df):
-            missing = set(systema_df["condition"]) - set(merged["condition"])
+            missing = (
+                set(systema_df["condition"])
+                - set(merged["condition"])
+            )
             if len(missing) <= 10:
-                log.info(f"  Unmatched conditions: {sorted(missing)}")
+                log.info("Unmatched conditions: %s", sorted(missing))
             else:
-                log.info(f"  Unmatched conditions: {len(missing)} "
-                      f"(first 5: {sorted(missing)[:5]})")
+                log.info(
+                    "Unmatched conditions: %d (first 5: %s)",
+                    len(missing),
+                    sorted(missing)[:5],
+                )
 
-        # ---- 2D classification ----
-        # Use sb_from_median_all_genes as the reliability metric
         rel_col = "sb_from_median_all_genes"
         if rel_col not in merged.columns:
             rel_col = "sb_from_mean_all_genes"
 
         if rel_col in merged.columns:
             rho = merged[rel_col]
-            cos = merged["cos_sim"]
 
             merged["reliable"] = rho >= RELIABILITY_THRESH
-            merged['high_systematic'] = merged['frac_systematic_var'] >= SPECIFICITY_THRESH
+            merged["high_systematic"] = (
+                merged["frac_systematic_var"] >= SPECIFICITY_THRESH
+            )
 
-            # 2D triage categories
             conditions = [
-                (~merged["reliable"]),
-                (merged["reliable"]) & (merged["high_systematic"]),
-                (merged["reliable"]) & (~merged["high_systematic"]),
+                ~merged["reliable"],
+                merged["reliable"] & merged["high_systematic"],
+                merged["reliable"] & ~merged["high_systematic"],
             ]
             choices = ["Unreliable", "Shared", "Specific"]
-            merged["triage_2d"] = np.select(conditions, choices, default="other")
 
-            # log.info 2D triage summary
-            log.info(f"\n  ── 2D Triage Summary ──")
-            log.info(f"  Reliability metric: {rel_col}")
-            for cat in ["Unreliable", "Shared", "Specific"]:
-                n = (merged["triage_2d"] == cat).sum()
-                pct = 100 * n / len(merged) if len(merged) > 0 else 0
-                log.info(f"    {cat:20s}: {n:>5} ({pct:5.1f}%)")
+            merged["triage_2d"] = np.select(
+                conditions,
+                choices,
+                default="other",
+            )
 
-            # Ceiling on genuine signal
+            log.info("\n  ── 2D Triage Summary ──")
+            log.info("  Reliability metric: %s", rel_col)
+
+            for category in ["Unreliable", "Shared", "Specific"]:
+                n = (merged["triage_2d"] == category).sum()
+                pct = 100 * n / len(merged) if len(merged) else 0
+                log.info(
+                    "    %s: %d (%.1f%%)",
+                    category,
+                    n,
+                    pct,
+                )
+
             ceiling_col = "ceiling_from_median_all_genes"
             if ceiling_col not in merged.columns:
                 ceiling_col = "ceiling_from_mean_all_genes"
+
             if ceiling_col in merged.columns:
-                genuine = merged[merged["triage_2d"] == "Specific"]
-                if len(genuine) > 0:
-                    log.info(f"    Genuine signal: mean ceiling = "
-                          f"{genuine[ceiling_col].mean():.3f}, "
-                          f"mean cos_sim = {genuine['cos_sim'].mean():.3f}")
+                genuine = merged[
+                    merged["triage_2d"] == "Specific"
+                ]
+
+                if len(genuine):
+                    log.info(
+                        "    Genuine signal: mean ceiling = %.3f, "
+                        "mean cos_sim = %.3f",
+                        genuine[ceiling_col].mean(),
+                        genuine["cos_sim"].mean(),
+                    )
         else:
-            log.info(f"  ⚠ Reliability column '{rel_col}' not found in reliability data")
+            log.warning(
+                "Reliability column '%s' not found",
+                rel_col,
+            )
 
         return merged
 
     @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for this systematic step to the given parser."""
+    def add_cli_args(cls, parser):
+        """Add CLI args for this systematic step."""
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
-            '--gsea-global-shared-axis-hallmark', dest='gsea_global_shared_axis_hallmark', type=Path,
-            help='Path to the GSEA global shared axis results. If provided, will add influence scores '
-                 + 'to the corresponding lead genes'
+            "--gsea-global-shared-axis-hallmark",
+            dest="gsea_global_shared_axis_hallmark",
+            type=Path,
+            help="Path to global shared-axis GSEA results.",
         )
+
         parser.add_argument(
-            '--gsea-moa-shared-axis-hallmark', dest='gsea_moa_shared_axis_hallmark', type=Path,
-            help='Path to the GSEA MOA shared axis results. If provided, will add influence scores '
-                 + 'to the corresponding lead genes'
+            "--gsea-moa-shared-axis-hallmark",
+            dest="gsea_moa_shared_axis_hallmark",
+            type=Path,
+            help=(
+                "Path to MOA shared-axis GSEA results. Significant "
+                "pathway lead genes are used for pathway and union "
+                "influence analyses."
+            ),
         )
 
-    def run(self) -> None:
-        """Run the full pipeline."""
-        log.info("Running Systema Systematic Variation + Reliability 2D")
+    def run(self):
+        """Run the full systematic pipeline."""
+        log.info(
+            "Running Systema Systematic Variation + Reliability 2D"
+        )
 
-        cur_time = time.strftime('%Y%m%d-%H%M%S')
+        cur_time = time.strftime("%Y%m%d-%H%M%S")
         all_summary_rows = {}
 
         try:
@@ -914,103 +1283,145 @@ class SystematicStep(BaseSystematicStep):
                 delta_p_dir = delta_p_mode.delta_p_dir
 
                 if not delta_p_dir or not delta_p_dir.is_dir():
-                    log.warning(f"{mode} delta_p dir not found, skipping mode")
+                    log.warning(
+                        "%s delta_p dir not found, skipping mode",
+                        mode,
+                    )
                     continue
 
-                log.info(f"Evaluating {mode}")
+                log.info("Evaluating %s", mode)
                 all_summary_rows[mode] = []
 
                 for ds_name in self.datasets:
                     systema_df = self.compute_systema_metrics(
-                        ds_name, mode, delta_p_dir, reliability_dir, cur_time
+                        ds_name,
+                        mode,
+                        delta_p_dir,
+                        reliability_dir,
+                        cur_time,
                     )
 
-                    # Save Systema-only results
-                    systema_path = self.output_dir / f"systema_{mode}_{ds_name}_{cur_time}.csv"
+                    systema_path = (
+                        self.output_dir
+                        / f"systema_{mode}_{ds_name}_{cur_time}.csv"
+                    )
                     systema_df.to_csv(systema_path, index=False)
-                    log.info(f"\n  Saved: {systema_path}")
+                    log.info("Saved: %s", systema_path)
 
-                    # Merge with reliability
-                    merged_df = self.merge_with_reliability(ds_name, systema_df, reliability_dir)
+                    merged_df = self.merge_with_reliability(
+                        ds_name,
+                        systema_df,
+                        reliability_dir,
+                    )
 
-                    merged_path = self.output_dir / f"systema_{mode}_cc_reliability_2d_{ds_name}_{cur_time}.csv"
+                    merged_path = (
+                        self.output_dir
+                        / f"systema_{mode}_cc_reliability_2d_"
+                          f"{ds_name}_{cur_time}.csv"
+                    )
                     merged_df.to_csv(merged_path, index=False)
-                    log.info(f"  Saved: {merged_path}")
+                    log.info("Saved: %s", merged_path)
 
-                    if ds_name == 'tahoe100m':
-                        self.summarize_tahoe100m_by_group(mode, merged_df, cur_time)
+                    if ds_name == "tahoe100m":
+                        self.summarize_tahoe100m_by_group(
+                            mode,
+                            merged_df,
+                            cur_time,
+                        )
 
-                    # Cross-dataset summary row
                     summary_row = {
                         "n_conditions": len(systema_df),
                         "n_contexts": systema_df["context"].nunique(),
-                        "n_perturbations": systema_df["perturbation"].nunique(),
+                        "n_perturbations": (
+                            systema_df["perturbation"].nunique()
+                        ),
                         "cos_sim_mean": systema_df.cos_sim.mean(),
                         "cos_sim_std": systema_df.cos_sim.std(),
                         "cos_sim_median": systema_df.cos_sim.median(),
-                        "frac_cos_gt_0.5": (systema_df.cos_sim > 0.5).mean(),
-                        "frac_cos_gt_0.7": (systema_df.cos_sim > 0.7).mean(),
+                        "frac_cos_gt_0.5": (
+                            systema_df.cos_sim > 0.5
+                        ).mean(),
+                        "frac_cos_gt_0.7": (
+                            systema_df.cos_sim > 0.7
+                        ).mean(),
                     }
 
-                    # Add 2D triage counts if available
                     if "triage_2d" in merged_df.columns:
-                        for cat in ["Unreliable", "Shared", "Specific"]:
-                            n = (merged_df["triage_2d"] == cat).sum()
-                            summary_row[f"n_{cat}"] = n
-                            summary_row[f"frac_{cat}"] = (
-                                n / len(merged_df) if len(merged_df) > 0 else np.nan
+                        for category in [
+                            "Unreliable",
+                            "Shared",
+                            "Specific",
+                        ]:
+                            n = (
+                                merged_df["triage_2d"] == category
+                            ).sum()
+                            summary_row[f"n_{category}"] = n
+                            summary_row[f"frac_{category}"] = (
+                                n / len(merged_df)
+                                if len(merged_df)
+                                else np.nan
                             )
 
                     all_summary_rows[mode].append(summary_row)
 
-        except Exception as e:
-            log.info(f"\n  ✗ FAILED: {e}")
-            raise e
+        except Exception:
+            log.exception("Systematic step failed")
+            raise
 
-        if self.gsea_global_axis is not None:
-            self.gsea_global_axis.to_csv(
-                self.output_dir / f'{self.args.gsea_global_shared_axis_hallmark.stem}_updated.csv'
-            )
-        if self.gsea_moa_axis is not None:
-            self.gsea_moa_axis.to_csv(
-                self.output_dir / f'{self.args.gsea_moa_shared_axis_hallmark.stem}_updated.csv'
-            )
-
-        # ---- Cross-dataset summary ----
+        # Cross-dataset summary.
         for mode, summary_rows in all_summary_rows.items():
             summary_df = pd.DataFrame(summary_rows)
 
             if self.regression:
-                summary_path = self.output_dir / f"systema_{mode}_cc_summary_regression_{cur_time}.csv"
+                summary_path = (
+                    self.output_dir
+                    / f"systema_{mode}_cc_summary_regression_{cur_time}.csv"
+                )
             else:
-                summary_path = self.output_dir / f"systema_{mode}_cc_summary_tahoe100m_{cur_time}.csv"
+                summary_path = (
+                    self.output_dir
+                    / f"systema_{mode}_cc_summary_tahoe100m_{cur_time}.csv"
+                )
 
             summary_df.to_csv(summary_path, index=False)
 
-            log.info(f"\n{'='*70}")
-            log.info(f"  Cross-Dataset Summary (Cellular Context), mode {mode}")
-            log.info(f"{'='*70}")
-            log.info(summary_df.to_string(index=False))
-            log.info(f"\n  Saved: {summary_path}")
+            log.info("\n%s", "=" * 70)
+            log.info(
+                "Cross-Dataset Summary (Cellular Context), mode %s",
+                mode,
+            )
+            log.info("%s", "=" * 70)
+            log.info("\n%s", summary_df.to_string(index=False))
+            log.info("Saved: %s", summary_path)
 
-            # Grand totals
             if "n_Unreliable" in summary_df.columns:
                 total = summary_df["n_conditions"].sum()
-                total_unmeas = summary_df.get("n_Unreliable", pd.Series([0])).sum()
-                total_falsely = summary_df.get("n_Shared", pd.Series([0])).sum()
-                total_genuine = summary_df.get("n_Specific", pd.Series([0])).sum()
-                total_2d = total_unmeas + total_falsely + total_genuine
+                total_unmeas = summary_df["n_Unreliable"].sum()
+                total_shared = summary_df["n_Shared"].sum()
+                total_specific = summary_df["n_Specific"].sum()
+                total_2d = (
+                    total_unmeas + total_shared + total_specific
+                )
 
                 if total_2d > 0:
-                    log.info(f"\n  ── Grand Totals (across all datasets) ──")
-                    log.info(f"  Total conditions (Systema):  {int(total)}")
-                    log.info(f"  Total conditions (merged):   {int(total_2d)}")
-                    log.info(f"    Unmeasurable:    {int(total_unmeas):>5} "
-                          f"({100*total_unmeas/total_2d:.1f}%)")
-                    log.info(f"    Falsely solved:  {int(total_falsely):>5} "
-                          f"({100*total_falsely/total_2d:.1f}%)")
-                    log.info(f"    Genuine signal:  {int(total_genuine):>5} "
-                          f"({100*total_genuine/total_2d:.1f}%)")
-
-                    log.info(f"\n  ★ Effective benchmark size: {int(total_genuine)} conditions "
-                          f"({100*total_genuine/total_2d:.1f}% of evaluated)")
+                    log.info("\n  ── Grand Totals ──")
+                    log.info("  Total conditions: %d", int(total))
+                    log.info(
+                        "  Unreliable: %d (%.1f%%)",
+                        int(total_unmeas),
+                        100 * total_unmeas / total_2d,
+                    )
+                    log.info(
+                        "  Shared: %d (%.1f%%)",
+                        int(total_shared),
+                        100 * total_shared / total_2d,
+                    )
+                    log.info(
+                        "  Specific: %d (%.1f%%)",
+                        int(total_specific),
+                        100 * total_specific / total_2d,
+                    )
+                    log.info(
+                        "  Effective benchmark size: %d conditions",
+                        int(total_specific),
+                    )

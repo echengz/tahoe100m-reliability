@@ -20,7 +20,6 @@ from tahoe100m_reliability.regression import (
     RegressionPipelineRunner,
 )
 from tahoe100m_reliability.regression.steps import (
-    RegressionFiguresStep,
     RegressionReliabilityStep,
     RegressionSystematicStep,
 )
@@ -101,13 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     RegressionSystematicStep.add_cli_args(regression_systematic_parser)
 
-    # REGRESSION FIGURES
-    regression_figures_parser = subparsers.add_parser(
-        'r-figures',
-        help='Run the regression figures step'
-    )
-    RegressionFiguresStep.add_cli_args(regression_figures_parser)
-
     return parser
 
 
@@ -126,7 +118,6 @@ def main() -> None:
         'regression': RegressionPipelineRunner,
         'r-reliability': RegressionReliabilityStep,
         'r-systematic': RegressionSystematicStep,
-        'r-figures': RegressionFiguresStep,
     }
 
     runner = runner_map.get(args.command)

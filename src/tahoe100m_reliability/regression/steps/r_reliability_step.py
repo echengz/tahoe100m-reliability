@@ -10,6 +10,11 @@ Basically takes the dataset loading code of the original
 framework but uses the reliability computation functions
 in the new one, since input data types are different but
 core reliability functions should work the same.
+
+NOTE: the original datasets already underwent CP10K normalization,
+and as thus does not need to be applied/recalculated here. If possible,
+it would be interesting to compute reliability on the raw datasets, but
+that data is not publically available.
 """
 import argparse
 import logging
@@ -26,7 +31,6 @@ from tahoe100m_reliability.lib.step.base_reliability_step import BaseReliability
 
 from tahoe100m_reliability.lib.analysis.compute_reliability import (
     compute_split_half_reliability,
-    cp10k_normalization,
 )
 from .datasets import CELLULAR_DATASETS, CTRL_LABEL_CANDIDATES
 
@@ -172,9 +176,6 @@ class RegressionReliabilityStep(BaseReliabilityStep):
             else:
                 ctrl_dense = X_norm[ctrl_idx].astype(np.float32)
 
-            if self.args.normalize_cp10k:
-                ctrl_dense = cp10k_normalization(ctrl_dense)
-
             ctrl_n_effective = ctrl_dense.shape[0]
 
             # ---- Compute top-k gene index by mean control expression ----
@@ -232,9 +233,6 @@ class RegressionReliabilityStep(BaseReliabilityStep):
                 else:
                     X_stim_dense = (X_sub.astype(np.float32)
                                     if X_sub.dtype != np.float32 else X_sub)
-
-                if self.args.normalize_cp10k:
-                    X_stim_dense = cp10k_normalization(X_stim_dense)
 
                 tasks.append((
                     cond_name,
@@ -313,10 +311,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
 
         # save delta_p results for downstream analysis
         if delta_p_results:
-            if self.args.normalize_cp10k:
-                delta_p_filename = f"{ds_name}_cp10k_delta_p.npz"
-            else:
-                delta_p_filename = f"{ds_name}_delta_p.npz"
+            delta_p_filename = f"{ds_name}_delta_p.npz"
 
             self.save_delta_p_results(
                 delta_p_results=delta_p_results,
@@ -332,7 +327,6 @@ class RegressionReliabilityStep(BaseReliabilityStep):
             cluster=0,
             all_rows=all_rows,
             dataset_name=ds_name,
-            normalize_cp10k=self.args.normalize_cp10k,
         )
 
     def compare_baseline(self, ds_name: str, df_long: pd.DataFrame, df_summary: pd.DataFrame) -> None:
@@ -399,6 +393,8 @@ class RegressionReliabilityStep(BaseReliabilityStep):
 
         # run all datasets for regression
         datasets_to_run = list(CELLULAR_DATASETS.keys())
+        all_results = {}
+
         for ds_name in datasets_to_run:
             h5ad_path = self.args.input_dir / f"{ds_name}.h5ad"
 
@@ -408,6 +404,48 @@ class RegressionReliabilityStep(BaseReliabilityStep):
 
             df_long, df_summary = self.regression_split_half_reliability(ds_name, h5ad_path)
 
-            # compare non-normalized results with baseline
-            if not self.args.normalize_cp10k:
-                self.compare_baseline(ds_name, df_long, df_summary)
+            # compare results with baseline
+            self.compare_baseline(ds_name, df_long, df_summary)
+
+            all_results[ds_name] = df_long
+
+        # print out split half results for report; identical to how Tahoe-100M's heatmap
+        # is constructed
+        for ds_name, df in all_results.items():
+            gene_mode = "all_genes"
+
+            # Fixed split-half sizes
+            fixed = df[
+                (df["n_mode"] == "fixed") &
+                (df["gene_mode"] == gene_mode)
+            ]
+
+            fixed_by_condition = (
+                fixed.groupby(["condition", "n_half"])["median_r"]
+                     .median()
+                     .unstack("n_half")
+            )
+
+            summary = fixed_by_condition.mean()
+
+            # Maximum available sample size
+            max_available = df[
+                (df["n_mode"] == "max") &
+                (df["gene_mode"] == gene_mode)
+            ]
+
+            summary["Max Available"] = (
+                max_available.groupby("condition")["median_r"]
+                             .median()
+                             .mean()
+            )
+
+            # Display as a latex table
+            columns = [8, 16, 32, 64, 128, 256, 512, "Max Available"]
+            values = summary.reindex(columns)
+            row = (
+                f"{ds_name} & Wei et al & "
+                + " & ".join(f"${v:.2f}$" for v in values)
+                + r" \\"
+            )
+            print(row)
