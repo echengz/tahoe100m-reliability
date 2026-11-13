@@ -2,6 +2,7 @@
 Base class to handle a step of the pipeline.
 """
 import argparse
+import time
 
 
 class PipelineStep:
@@ -9,7 +10,9 @@ class PipelineStep:
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize the step."""
-        pass
+
+        # time step was initiated; for output files
+        self.cur_time = time.strftime('%Y%m%d-%H%M%S')
 
     def run(self) -> None:
         """Run the step."""

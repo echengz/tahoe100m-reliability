@@ -1,7 +1,7 @@
 """
 Runs the reliability regression step. Runs current framework
-on prior datasets to ensure output is still the same/consistent
-with the original.
+on prior Wei et al datasets to ensure output is still the
+same/consistent with the original.
 
 Focusing on cellular context as that is the version the
 current Tahoe100m version was based on.
@@ -332,11 +332,11 @@ class RegressionReliabilityStep(BaseReliabilityStep):
     def compare_baseline(self, ds_name: str, df_long: pd.DataFrame, df_summary: pd.DataFrame) -> None:
         """Compare baseline results."""
 
-        # compare with original results
+        # get baseline (original) results
         baseline_df_long = pd.read_csv(self.args.baseline_dir / f'reliability_cc_{ds_name}.csv')
         baseline_df_summary = pd.read_csv(self.args.baseline_dir / f'reliability_cc_summary_{ds_name}.csv')
 
-        # remove dataset/cluster columns
+        # remove dataset/cluster columns, meaning different between two versions
         df_long = df_long.drop(columns=['cluster'])
         df_summary = df_summary.drop(columns=['cluster'])
         baseline_df_long = baseline_df_long.drop(columns=['dataset'])

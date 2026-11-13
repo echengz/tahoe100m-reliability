@@ -579,8 +579,7 @@ class ReliabilityStep(BaseReliabilityStep):
         )
 
         # write out dropped genes
-        cur_time = time.strftime('%Y%m%d-%H%M%S')
-        dropped_genes_filepath = self.args.output_dir / f'dropped_genes_histogram_cluster_{cluster}_{cur_time}.json'
+        dropped_genes_filepath = self.args.output_dir / f'dropped_genes_histogram_cluster_{cluster}_{self.cur_time}.json'
         with dropped_genes_filepath.open('w') as fh:
             json.dump(all_dropped_genes, fh, indent=4)
 
@@ -588,7 +587,7 @@ class ReliabilityStep(BaseReliabilityStep):
 
         # write out skipped conditions
         if skipped_conditions:
-            skipped_conditions_filepath = self.args.output_dir / f"skipped_conditions_cluster_{cluster}_{cur_time}.json"
+            skipped_conditions_filepath = self.args.output_dir / f"skipped_conditions_cluster_{cluster}_{self.cur_time}.json"
             with skipped_conditions_filepath.open("w") as fh:
                 json.dump({"skipped_conditions": skipped_conditions}, fh, indent=4)
 

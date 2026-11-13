@@ -457,13 +457,12 @@ def compute_e_distance_reliability(
     return rows
 
 
-def summarize_edist_results(cluster, all_rows, output_dir) -> None:
+def summarize_edist_results(cluster, all_rows, output_dir, cur_time) -> None:
     """Summarize the edist results."""
     df = pd.DataFrame(all_rows)
     del all_rows
 
     df.insert(0, "cluster", cluster)
-    cur_time = time.strftime('%Y%m%d-%H%M%S')
     out = output_dir / f"e_reliability_tahoe100m_cluster_{cluster}_{cur_time}.csv"
     df.to_csv(out, index=False)
 

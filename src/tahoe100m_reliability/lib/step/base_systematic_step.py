@@ -34,6 +34,8 @@ class BaseSystematicStep(PipelineStep):
     """
     def __init__(self, args: argparse.Namespace) -> None:
         """Initializer."""
+        super().__init__(args)
+
         if not args.delta_p_raw_dir and not args.delta_p_cp10k_dir:
             raise FileNotFoundError("At least one delta_p dir must be passed")
 
@@ -66,12 +68,12 @@ class BaseSystematicStep(PipelineStep):
         parser.add_argument(
             '--reliability-raw-dir', dest='reliability_raw_dir', type=Path,
             help="Path to the raw reliability results to serve as input data. Should "
-                 + "contain both reliability_summary_tahoe100m_cluster_*.csv files"
+                 + "contain both reliability_summary_*_cluster_*.csv files"
         )
         parser.add_argument(
             '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
             help="Path to the CP10K reliability results to serve as input data. Should "
-                 + "contain both reliability_summary_tahoe100m_cluster_*.csv files"
+                 + "contain both reliability_summary_*_cluster_*.csv files"
         )
 
         parser.add_argument(

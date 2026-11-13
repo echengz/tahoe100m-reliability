@@ -70,7 +70,7 @@ class SystematicFigures(BaseSystematicFigures):
     def plot_systematic_all(self) -> None:
         """Plot global specificity results."""
         df = self.grab_latest_systema_results(
-            prefix=f'systema_{self.mode}_cc_summary_tahoe100m'
+            prefix=f'systema_cc_{self.mode}_summary_tahoe100m'
         )
 
         categories = ["Unreliable", "Shared", "Specific"]
@@ -183,7 +183,7 @@ class SystematicFigures(BaseSystematicFigures):
         """Plot the specificities grouped by drug, drug x dosage, and cell line ID.""" 
         for group in ['drug', 'dosage', 'drug_x_dosage', 'cell_line_id', 'moa']:
             df = self.grab_latest_systema_results(
-                prefix=f'systema_{self.mode}_cc_reliability_2d_summary_tahoe100m_by_{group}'
+                prefix=f'systema_cc_{self.mode}_reliability_2d_summary_tahoe100m_by_{group}'
             )
 
             if df.empty:
@@ -258,7 +258,7 @@ class SystematicFigures(BaseSystematicFigures):
         group-specific gene influence against global influence.
         """
         global_df = self.grab_latest_systema_results(
-            prefix=f'systema_{self.mode}_top1000_influential_genes'
+            prefix=f'systema_cc_{self.mode}_top1000_influential_genes'
         )
 
         ranking_col = 'total_influence_abs'
@@ -288,7 +288,7 @@ class SystematicFigures(BaseSystematicFigures):
         for group in ['cell_line_id', 'moa']:
 
             df = self.grab_latest_systema_results(
-                prefix=f'systema_{self.mode}_top200_influential_genes_by_{group}'
+                prefix=f'systema_cc_{self.mode}_top200_influential_genes_by_{group}'
             )
 
             # Only retain globally selected genes
@@ -571,10 +571,10 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         ]
 
         raw_df = self.grab_latest_systema_results(
-            prefix="systema_raw_top1000_influential_genes"
+            prefix="systema_cc_raw_top1000_influential_genes"
         )
         cp10k_df = self.grab_latest_systema_results(
-            prefix="systema_cp10k_top1000_influential_genes"
+            prefix="systema_cc_cp10k_top1000_influential_genes"
         )
 
         raw_df = raw_df[["token_id", "gene_symbol"] + influence_cols].rename(

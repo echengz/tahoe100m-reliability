@@ -24,6 +24,7 @@ class BaseReliabilityStep(PipelineStep):
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize reliability step."""
+        super().__init__(args)
         self.args = args
         self.args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -93,6 +94,7 @@ class BaseReliabilityStep(PipelineStep):
         delta_p_stack = np.stack(
             [x["delta_p"] for x in delta_p_results],
             axis=0,
+            dtype=np.float32
         )
 
         np.savez(
@@ -201,14 +203,12 @@ class BaseReliabilityStep(PipelineStep):
                         log.info(f"    Ceiling median: {ceil_vals.median():.3f}")
 
         # write to output
-        cur_time = time.strftime('%Y%m%d-%H%M%S')
-
         df_long.to_csv(
-            self.args.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{cur_time}.csv',
+            self.args.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
             index=False
         )
         df_summary.to_csv(
-            self.args.output_dir / f'reliability_summary_{dataset_name}_cluster_{cluster}_{cur_time}.csv',
+            self.args.output_dir / f'reliability_summary_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
             index=False
         )
         log.info(f"Wrote Pearson split-half reliability results for cluster {cluster}")

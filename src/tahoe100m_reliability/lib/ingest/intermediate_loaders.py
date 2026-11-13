@@ -136,7 +136,9 @@ def load_reliable_conditions(
     the set of 'condition' keys (format 'ctx|drug|dosage') with ρ ≥ RELIABILITY_THRESHOLD.
     The cellular reliability CSVs are named `reliability*_tahoe100m_cluster_*.csv`.
     """
-    rel_df = get_combined_cluster_split_half_reliability_df(reliability_dir, clusters, ds_name=ds_name)
+    rel_df = get_combined_cluster_split_half_reliability_df(
+        reliability_dir, clusters, ds_name=ds_name, summary=False
+    )
     rel_col = next((c for c in rel_col_fallbacks if c in rel_df.columns), None)
 
     if rel_col is None:
@@ -182,6 +184,7 @@ def load_delta_p_results(
             for cond in target_conds
         }
     else:
+        # wei et al/regression datasets not separated by cell line ID
         all_cell_line_ids = {''}
 
     # iterate over each cell line and its perturbations
@@ -202,7 +205,7 @@ def load_delta_p_results(
         if ds_name == 'tahoe100m':
             npz_files = cell_line_dir.glob('*.npz')
         else:
-            npz_files = cell_line_dir.glob(f'*{ds_name}*.npz')
+            npz_files = cell_line_dir.glob(f'{ds_name}*.npz')
 
         if clusters is not None:
             npz_files = [
