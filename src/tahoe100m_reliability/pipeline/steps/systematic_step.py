@@ -16,18 +16,17 @@ from tqdm import tqdm
 from typing import Any
 
 from tahoe100m_reliability.lib.analysis.influence_accumulator import (
-    InfluenceAccumulator,
-    # GroupInfluenceAccumulator,
-    summarize_perturbation_influence,
+    InfluenceAccumulatorHandler,
 )
 from tahoe100m_reliability.lib.analysis.compute_systematic import (
+    compute_gene_influences,
+    compute_pathway_influences,
     score_perturbation,
 )
 
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
     get_combined_cluster_split_half_reliability_df,
     load_delta_p_results,
-    load_gene_ids,
     load_reliable_conditions,
     RELIABILITY_THRESH,
     SPECIFICITY_THRESH,
@@ -52,6 +51,23 @@ class SystematicStep(BaseSystematicStep):
         super().__init__(args=args)
         self.name = name
         self.datasets = datasets
+
+    def post_process_perturbation_score(
+        self,
+        mode: str,
+        cell_line_id: str,
+        condition: str,
+        delta_p,
+        delta_avg,
+        score_results,
+        working_results,
+    ) -> None:
+        """Post process perturbation score as needed."""
+        pass
+
+    def post_process_cell_line_results(self, cell_line_id: str, cell_line_rows: list) -> None:
+        """Post process cell line results as needed."""
+        pass
 
     def compute_systema_metrics(
         self, mode: str, ds_name: str, delta_p_dir: Path, reliability_dir: Path
@@ -98,6 +114,8 @@ class SystematicStep(BaseSystematicStep):
                 )
                 continue
 
+            cell_line_rows = []
+
             # Group conditions by context
             contexts = np.asarray([
                 self.parse_condition(condition)[0]
@@ -120,7 +138,7 @@ class SystematicStep(BaseSystematicStep):
                 n_perts = len(unique_perts)
                 if n_perts == 0:
                     log.info(
-                        f"Context '{context}': no perturbations, skipping"
+                        f"Context group '{context_group}': no perturbations, skipping"
                     )
                     continue
 
@@ -171,16 +189,30 @@ class SystematicStep(BaseSystematicStep):
                         'n_perts_in_context': n_perts,
                     }
 
-                    row.update(
-                        score_perturbation(
-                            delta_p=delta_p,
-                            delta_avg=delta_avg,
-                            norm_delta_avg=norm_delta_avg,
-                            is_rel=is_rel
-                        )
+                    score_results, working_results = score_perturbation(
+                        delta_p=delta_p,
+                        delta_avg=delta_avg,
+                        norm_delta_avg=norm_delta_avg,
+                        is_rel=is_rel
                     )
 
-                    all_rows.append(row)
+                    row.update(score_results)
+                    cell_line_rows.append(row)
+
+                    # Optional post-processing of perturbation results
+                    self.post_process_perturbation_score(
+                        mode,
+                        cell_line_id,
+                        condition,
+                        delta_p,
+                        delta_avg,
+                        score_results,
+                        working_results,
+                    )
+
+            # Optional post processing of cell line results
+            self.post_process_cell_line_results(cell_line_id, cell_line_rows)
+            all_rows.extend(cell_line_rows)
 
         # build final dataframes
         df = pd.DataFrame(all_rows)
@@ -400,21 +432,22 @@ class SystematicStep(BaseSystematicStep):
         self.generate_full_summaries(all_summary_rows)
 
 
-class SystematicStepTahoe100M(SystematicStep):
-    """Evaluate systematic on Tahoe-100M."""
+class SystematicInfluenceStep(SystematicStep):
+    """Evaluate systematic and influence scores."""
 
     def __init__(self, args: argparse.Namespace) -> None:
         """Initializer."""
         super().__init__(args=args, name='tahoe100m', datasets=['tahoe100m'])
+
         self.drug_to_moa = self.load_drug_moa_mapping()
 
-        # load GSEA MOA results, if provided
-        self.gsea_moa_axis = None, None
-
-        if args.gsea_moa_shared_axis_hallmark:
-            self.gsea_moa_axis = GSEAInfluenceAnnotator(
-                args.gsea_moa_shared_axis_hallmark, moa_targets=self.load_moa_targets()
-            )
+        self.influence_accumulator = InfluenceAccumulatorHandler(
+            args.gsea_global_shared_axis_hallmark,
+            args.gsea_moa_shared_axis_hallmark,
+            self.gene_metadata,
+            self.output_dir,
+            self.cur_time,
+        )
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -443,69 +476,66 @@ class SystematicStepTahoe100M(SystematicStep):
 
         return context, perturbation
 
-    def summarize_influence(
+    def post_process_perturbation_score(
         self,
-        gene_rows: dict[str, Any],
-        n_genes_per_grouping: int = 200,
-        extra_fields: dict[str, Any] | None = None,
-        normalization_mode: str | None = None,
-        gsea_axis_mode: str | None = None,
-    ) -> pd.DataFrame:
-        """
-        Summarize the influence scores for each perturbation group
-        and add gene metadata.
-        """
-        influence_summary = []
+        mode: str,
+        cell_line_id: str,
+        condition: str,
+        delta_p,
+        delta_avg,
+        score_results,
+        working_results,
+    ) -> None:
+        """Post process perturbation score - computes gene accumulator."""
 
-        for gene_id, influence in gene_rows.items():
-            row = summarize_perturbation_influence(gene_id, influence)
-            if extra_fields:
-                row.update(extra_fields)
+        # gene accumulation; make sure this is a reliable/finate condition
+        frac_systematic = score_results['frac_systematic_var']
+        if not np.isfinite(frac_systematic):
+            return
 
-            influence_summary.append(row)
+        # if encountering new mode/cell line combo, add accumulators for it
+        if not self.influence_accumulator.exists(mode, cell_line_id):
+            self.influence_accumulator.initialize(mode, cell_line_id, self.ctrl_gene_expressions_dir)
 
-        df = pd.DataFrame(influence_summary).merge(
-            self.gene_metadata[['token_id', 'gene_symbol', 'ensembl_id']],
-            on='token_id',
-            how='left',
-            validate='many_to_one',
-        )
-        # Rank genes by absolute influence (1 = highest influence)
-        df['influence_rank'] = (
-            df['mean_abs_influence']
-            .rank(method='min', ascending=False)
-            .astype(int)
+        # Gene influence
+        influences, valid = compute_gene_influences(
+            delta_p, delta_avg, working_results, frac_systematic
         )
 
-        # if provided GSEA axis mode is not None, add influence score to
-        # corresponding lead genes
-        if gsea_axis_mode is not None:
-            cell_line_id = extra_fields.get('cell_line_id') if extra_fields else None
-            moa = extra_fields.get('moa') if extra_fields else None
+        gene_accumulator = self.influence_accumulator.gene_accumulators[mode][cell_line_id]
+        gene_accumulator.accumulate(influences, valid, frac_systematic)
 
-            # both require cell_line_id
-            if cell_line_id is None:
-                raise ValueError(
-                    f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
-                )
+        # GSEA accumulation - global
+        gsea_global_accumulator = self.influence_accumulator.gsea_global_accumulators[mode].get(cell_line_id)
+        if gsea_global_accumulator is not None:
+            pathway_masks = self.influence_accumulator.gsea_global_masks[mode][cell_line_id]
 
-            influence_lookup = df.set_index('gene_symbol').to_dict('index')
-            if gsea_axis_mode == 'cell_line_id' and self.gsea_global_axis is not None:
-                self.gsea_global_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id)
+            influences, valid = compute_pathway_influences(
+                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
+            )
+            gsea_global_accumulator.accumulate(influences, valid, frac_systematic)
 
-            elif gsea_axis_mode == 'moa' and self.gsea_moa_axis is not None:
-                # requires moa
-                if moa is None:
-                    raise ValueError(
-                        f"cell_line_id must be in influence summary to add to GSEA axis: {gsea_axis_mode}"
-                    )
-                self.gsea_moa_axis.update_lead_genes(influence_lookup, normalization_mode, cell_line_id, moa)
+        # GSEA accumulation - MOA
+        drug = self.parse_condition(condition)[1].split('|')[0]
+        moa = self.drug_to_moa.get(drug, 'unclear')
+        gsea_moa_accumulator = self.influence_accumulator.gsea_moa_accumulators[mode].get((cell_line_id, moa))
 
-        # report out top genes
-        return df.nlargest(n_genes_per_grouping, 'mean_abs_influence')
+        if gsea_moa_accumulator is not None:
+            pathway_masks = self.influence_accumulator.gsea_moa_masks[mode][(cell_line_id, moa)]
 
-    def post_per_dataset_processing(
-        self, mode: str, ds_name: str, systema_df: pd.DataFrame, merged_df: pd.DataFrame
+            influences, valid = compute_pathway_influences(
+                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
+            )
+            gsea_moa_accumulator.accumulate(influences, valid, frac_systematic)
+
+    def post_process_cell_line_results(
+        self, cell_line_id: str, cell_line_rows: list
+    ) -> None:
+        """Accumulate cell line-specific influence results."""
+        pass
+
+    def __summarize_merged_results(
+        self, mode: str, ds_name: str, merged_df: pd.DataFrame
     ) -> None:
         """Summarize Tahoe-100m merged results by specific groupings."""
         df = merged_df.copy()
@@ -558,6 +588,7 @@ class SystematicStepTahoe100M(SystematicStep):
             "drug_x_dosage": ["drug", "dosage"],
             "moa": ['moa']
         }
+        log.info(f"Grouping merged_df by the following categories: {list(groupings.keys())}")
 
         for grouping_name, group_cols in groupings.items():
             agg = {
@@ -679,4 +710,13 @@ class SystematicStepTahoe100M(SystematicStep):
             )
 
             summary.to_csv(out_path, index=False)
-            log.info("Saved %s summary: %s", grouping_name, out_path)
+
+    def post_per_dataset_processing(
+        self, mode: str, ds_name: str, systema_df: pd.DataFrame, merged_df: pd.DataFrame
+    ) -> None:
+        """Post-dataset processing."""
+        self.__summarize_merged_results(mode, ds_name, merged_df)
+
+        # summarize influence scores
+        self.influence_accumulator.finalize_gene_influences(mode)
+        self.influence_accumulator.finalize_gsea_influences(mode)

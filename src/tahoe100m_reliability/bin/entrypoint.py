@@ -13,7 +13,7 @@ from tahoe100m_reliability.pipeline.steps import (
     GseaStep,
     PreprocessStep,
     ReliabilityStep,
-    SystematicStepTahoe100M,
+    SystematicInfluenceStep,
 )
 
 from tahoe100m_reliability.regression import (
@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         'systematic',
         help='Runs the systematic step of the pipeline'
     )
-    SystematicStepTahoe100M.add_cli_args(systematic_parser)
+    SystematicInfluenceStep.add_cli_args(systematic_parser)
 
     # GSEA STEP
     gsea_parser = subparsers.add_parser(
@@ -112,7 +112,7 @@ def main() -> None:
         'all': Tahoe100mPipelineRunner,
         'preprocess': PreprocessStep,
         'reliability': ReliabilityStep,
-        'systematic': SystematicStepTahoe100M,
+        'systematic': SystematicInfluenceStep,
         'gsea': GseaStep,
         'figures': FiguresStep,
         'regression': RegressionPipelineRunner,

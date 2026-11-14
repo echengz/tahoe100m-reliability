@@ -1,9 +1,6 @@
 """
-Step to generate figures.
-
-Most steps generate their own figures if run separately. This step
-is meant to regenerate/tweak them as needed assuming the outputs
-have been generated
+Step to generate figures. Will only generate figures for
+steps whose output data is passed in as input arguments.
 """
 import argparse
 import logging

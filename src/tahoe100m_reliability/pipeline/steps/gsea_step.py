@@ -112,7 +112,7 @@ class GseaStep(BaseSystematicStep):
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for this systematic step to the given parser."""
+        """Add CLI args for this GSEA step to the given parser."""
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
@@ -141,7 +141,7 @@ class GseaStep(BaseSystematicStep):
         gene_symbols,
         moa: str | None = None
     ):
-        """Runs GSEA on shared axis for specified conditions."""
+        """Runs GSEA on the shared axis for specified conditions."""
         rel_weights = np.asarray([weights[c] for c in conds], dtype=np.float64)
         rel_deltas = np.stack([deltas[c] for c in conds]).astype(np.float64)
         shared = np.average(rel_deltas, axis=0, weights=rel_weights)
@@ -391,7 +391,7 @@ class GseaStep(BaseSystematicStep):
         """Run the step."""
         drug_to_moa = self.load_drug_moa_mapping() if not self.skip_moa_shared_axis else {}
 
-        # track globally and by drug
+        # track globally and by MOA for each cell line
         all_rows = []
         moa_rows = []
 
@@ -407,10 +407,10 @@ class GseaStep(BaseSystematicStep):
                 self.ds_name, reliability_dir, self.clusters
             )
 
-            candidate_files = sorted(delta_p_dir.rglob("*.npz"))
+            delta_p_files = sorted(delta_p_dir.rglob("*.npz"))
             cell_lines = sorted({
                 re.sub(r"_CP10K", "", re.sub(r"_cluster\d+\.npz$", "", f.name, flags=re.I), flags=re.I)
-                for f in candidate_files
+                for f in delta_p_files
                 if (("CP10K" in f.name.upper()) == (mode == "cp10k"))
             })
 
@@ -480,7 +480,8 @@ class GseaStep(BaseSystematicStep):
         # summarize GSEA results
         _, moa_df = self.__summarize_gsea_results(all_rows, moa_rows)
 
-        moa_df = pd.read_csv('./gsea-test-cluster/moa_shared_axis_hallmark_gsea.csv')
+        # for skipping above and going straight to clustering
+        # moa_df = pd.read_csv('./gsea-test-cluster/moa_shared_axis_hallmark_gsea.csv')
 
         # cluster MOA results
         if not self.skip_moa_shared_axis:

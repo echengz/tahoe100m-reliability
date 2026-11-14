@@ -94,7 +94,6 @@ class BaseReliabilityStep(PipelineStep):
         delta_p_stack = np.stack(
             [x["delta_p"] for x in delta_p_results],
             axis=0,
-            dtype=np.float32
         )
 
         np.savez(

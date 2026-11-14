@@ -262,7 +262,6 @@ class PreprocessStep(PipelineStep):
             '--treatment-sets-dir', dest='treatment_sets_dir',
             type=Path, required=True,
             help='Path to the indexed treatment sets directory. Will read and write results here.'
-
         )
 
         parser.add_argument(

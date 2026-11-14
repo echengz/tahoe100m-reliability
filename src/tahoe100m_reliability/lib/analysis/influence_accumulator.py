@@ -1,11 +1,15 @@
 """
-Accumulator for the systematic step to accumulate influence scores.
+Provides a vectorized accumulator for the systematic step to
+accumulate influence scores.
 """
 import numpy as np
 import pandas as pd
 
 from pathlib import Path
 from typing import Any
+
+from tahoe100m_reliability.lib.ingest.intermediate_loaders import load_gene_ids
+
 
 SPECIFICITY_THRESH = 0.5
 
@@ -17,10 +21,6 @@ class InfluenceAccumulator:
         'positive_influence',
         'total_influence',
         'total_influence_abs',
-        'delta_p_magnitude_total',
-        'delta_p_magnitude_total_abs',
-        'delta_p_magnitude_total_pos',
-        'delta_p_magnitude_total_neg',
     ]
 
     ACCUM_FIELDS_INT: list[str] = [
@@ -30,22 +30,34 @@ class InfluenceAccumulator:
         'categorical_change_towards_shared',
         'categorical_change_towards_specific',
         'categorical_change_neutral',
-        'num_upregulated',
-        'num_downregulated',
     ]
 
     ACCUM_FIELDS_ALL = ACCUM_FIELDS_FLOAT + ACCUM_FIELDS_INT
 
-    def __init__(self, gene_ids) -> None:
-        """Initialize accumulator."""
-        n = len(gene_ids)
+    def __init__(self, group_ids: dict[str, list[int]]) -> None:
+        """Initialize accumulator.
 
-        self.__acc = {
-            'gene_ids': gene_ids,
-            'cell_line_genes': {}
-        }
+        Takes as input the mapping of the named gene groups to their
+            corresponding gene_id (Tahoe-100M-specific) index to be
+            used as a mask on the corresponding condition's gene
+            expression vector.
+
+        For gene-specific analysis, this is simply a mapping of each
+            gene to its gene index.
+
+        For pathway-specific analysis, this is a mapping of the
+            named pathway to a list of its lead gene indexes.
+        """
+        n = len(group_ids)
+
+        self.group_ids = group_ids
+
+        self.__acc = {'group_ids': group_ids}
         self.__acc.update({k: np.zeros(n) for k in self.ACCUM_FIELDS_FLOAT})
         self.__acc.update({k: np.zeros(n, dtype=np.int64) for k in self.ACCUM_FIELDS_INT})
+
+        self.__n_groups = len(group_ids)
+        self.__groups = list(group_ids)
 
     def __setitem__(self, key, item) -> None:
         self.__acc[key] = item
@@ -55,201 +67,392 @@ class InfluenceAccumulator:
 
     def accumulate(
         self,
-        cell_line_id,
-        gene_ids,
-        delta_p,
-        influences,
-        valid,
-        frac_systematic,
+        influences: np.ndarray,
+        valid: np.ndarray,
+        frac_systematic: float,
     ) -> None:
         """Accumulate influence scores."""
-        idx = np.flatnonzero(valid & np.isfinite(influences))
+        if not np.isfinite(frac_systematic):
+            return
 
+        influences = np.asarray(influences, dtype=np.float64)
+        valid = np.asarray(valid, dtype=bool)
+
+        assert influences.shape == (self.__n_groups,), "Num influences does not match num groups"
+        assert valid.shape == (self.__n_groups,), "Num valid indices does not match num groups"
+
+        # get all valid indexes with an influence value
+        idx = np.flatnonzero(valid & np.isfinite(influences))
         if len(idx) == 0:
             return
 
         inf = influences[idx]
-        dp = delta_p[idx]
 
-        # These indices correspond directly to positions in acc
-        # Assumes gene_ids has the same ordering in every call.
-        assert np.array_equal(gene_ids, self['gene_ids'])
-
+        # track change in categorical classification
+        # in general most are expected to be neutral,
+        # classification only really changes if the original
+        # specificity score was close to the threshold
         shared = (
             (frac_systematic < SPECIFICITY_THRESH)
             & (frac_systematic - inf >= SPECIFICITY_THRESH)
         )
-
         specific = (
             (frac_systematic >= SPECIFICITY_THRESH)
             & (frac_systematic - inf < SPECIFICITY_THRESH)
         )
-
         neutral = ~(shared | specific)
 
         # Vectorized accumulation
+        # Totals
         self['positive_influence'][idx] += np.maximum(inf, 0)
         self['negative_influence'][idx] += np.minimum(inf, 0)
         self['total_influence'][idx] += inf
         self['total_influence_abs'][idx] += np.abs(inf)
+
+        # Counts
         self['num_instances'][idx] += 1
         self['num_positive_instances'][idx] += (inf > 0).astype(int)
         self['num_negative_instances'][idx] += (inf < 0).astype(int)
 
-        self['delta_p_magnitude_total'][idx] += dp
-        self['delta_p_magnitude_total_abs'][idx] += np.abs(dp)
-        self['delta_p_magnitude_total_pos'][idx] += np.maximum(dp, 0)
-        self['delta_p_magnitude_total_neg'][idx] += np.minimum(dp, 0)
-
-        self['num_upregulated'][idx] += (dp >= 0)
-        self['num_downregulated'][idx] += (dp < 0)
-
+        # Categorical changes
         self['categorical_change_towards_shared'][idx] += shared
         self['categorical_change_towards_specific'][idx] += specific
         self['categorical_change_neutral'][idx] += neutral
+        del inf
 
-        # One set update per perturbation, rather than one per gene
-        cell_line_genes = self['cell_line_genes'].setdefault(
-            cell_line_id, set()
-        )
-        cell_line_genes.update(gene_ids[idx])
-
-    def finalize_by_gene(self) -> dict[str, Any]:
-        """Finalize accumulation results by gene"""
-        gene_ids = self['gene_ids']
-
-        # Build gene -> cell lines mapping
-        cell_lines_by_gene = {}
-
-        for cell_line, genes in self['cell_line_genes'].items():
-            for gene in genes:
-                cell_lines_by_gene.setdefault(gene, set()).add(cell_line)
-
+    def get_accumulation(self) -> dict[str, Any]:
+        """Get accumulation results by gene group."""
         result = {}
 
-        for i in np.flatnonzero(self['num_instances']):
-            gene = gene_ids[i].item()
+        for i, group_id in enumerate(self.__groups):
+            if self['num_instances'][i] == 0:
+                continue
 
-            result[gene] = {
+            result[group_id] = {
                 field: self[field][i].item()
                 for field in self.ACCUM_FIELDS_ALL
             }
 
-            result[gene]['cell_lines'] = cell_lines_by_gene.get(
-                gene, set()
-            )
-
         return result
 
 
-def summarize_perturbation_influence(gene_id: str, influence):
-    num_instances = influence['num_instances']
-    num_positive_instances = influence['num_positive_instances']
-    num_negative_instances = influence['num_negative_instances']
+class InfluenceAccumulatorHandler:
+    """
+    Class to handle the three type of Influence accumulators:
+        gene (gene), GSEA (global, pathway), and GSEA (MOA, pathway)
+    """
 
-    return {
-        'token_id': gene_id,
-        'avg_influence': influence['total_influence'] / num_instances,
-        'avg_positive_influence': influence['positive_influence'] / influence['num_positive_instances'] if num_positive_instances else 0,
-        'avg_negative_influence': influence['negative_influence'] / influence['num_negative_instances'] if num_negative_instances else 0,
-        'negative_influence': influence['negative_influence'],
-        'positive_influence': influence['positive_influence'],
-        'total_influence': influence['total_influence'],
-        'total_influence_abs': influence['total_influence_abs'],
-        'mean_abs_influence': influence['total_influence_abs'] / num_instances,
-        'num_instances': num_instances,
-        'num_positive_instances': num_positive_instances,
-        'num_negative_instances': num_negative_instances,
-        'num_cell_lines': len(influence['cell_lines']),
-        'categorical_change_towards_shared': influence['categorical_change_towards_shared'],
-        'categorical_change_towards_specific': influence['categorical_change_towards_specific'],
-        'categorical_change_neutral': influence['categorical_change_neutral'],
-        'delta_p_magnitude_avg': influence['delta_p_magnitude_total'] / num_instances,
-        'delta_p_magnitude_abs_avg': influence['delta_p_magnitude_total_abs'] / num_instances,
-        'delta_p_magnitude_pos_avg': influence['delta_p_magnitude_total_pos'] / num_instances,
-        'delta_p_magnitude_neg_avg': influence['delta_p_magnitude_total_neg'] / num_instances,
-        'num_upregulated': influence['num_upregulated'],
-        'num_downregulated': influence['num_downregulated']
-    }
-
-
-class GSEAInfluenceAnnotator:
-    """Class to handle adding influence scores to GSEA results."""
-    def __init__(self, file: Path, moa_targets: list[str, Any] | None = None) -> None:
-        self.__gsea_axis = pd.read_csv(file)
-
-        # assert cell_line_id and normalization mode are in the df
-        for required_field in ['cell_line', 'mode']:
-            assert required_field in self.__gsea_axis.columns, \
-                f"Missing required column {required_field} in gsea_axis data"
-
-        # add MOA targets, if provided, same format as lead_genes
-        if moa_targets is not None:
-            self.__gsea_axis['moa_target_genes'] = (
-                self.__gsea_axis['moa']
-                .map(moa_targets)
-                .apply(lambda genes: ';'.join(genes) if isinstance(genes, list) else pd.NA)
-            )
-
-    def add_influence_score_to_lead_genes(
-        self, influence_lookup: dict[str, Any], lead_genes: str
-    ) -> str:
-        """Add influence score to lead genes. Assumes influence_scores and lead_genes
-        are associated with the same context (e.g. cell line or MOA grouping).
-
-        In the GSEA output, the lead_genes column is a ; separated list of genes
-
-        Returns a ; separated list of 
-            gene:mean_abs_inf:mean_pos_inf,mean_neg_inf:rank
-        """
-        updated_genes = []
-
-        for gene in lead_genes.split(';'):
-            gene = gene.strip()
-
-            if not gene:
-                continue
-
-            influence = influence_lookup.get(gene)
-
-            if influence is None:
-                updated_genes.append(f'{gene}:NA:NA:NA:NA')
-                continue
-
-            updated_genes.append(
-                f'{gene}:'
-                f'{influence["mean_abs_influence"]}:'
-                f'{influence["avg_positive_influence"]}:'
-                f'{influence["avg_negative_influence"]}:'
-                f'{influence["influence_rank"]}'
-            )
-
-        return ';'.join(updated_genes)
-
-    def update_lead_genes(
+    def __init__(
         self,
-        influence_lookup: dict[str, Any],
-        normalization_mode: str,
-        cell_line_id: str,
-        moa: str | None = None,
+        gsea_global_shared_axis_hallmark: Path,
+        gsea_moa_shared_axis_hallmark: Path,
+        gene_metadata: pd.DataFrame,
+        output_dir: Path,
+        cur_time: str,
     ) -> None:
-        mask = self.__gsea_axis['mode'] == normalization_mode
-        mask &= self.__gsea_axis['cell_line'] == cell_line_id
+        """Initializer."""
+        self.output_dir = output_dir
+        self.cur_time = cur_time
 
-        if moa is not None:
-            mask &= self.__gsea_axis['moa'] == moa
+        # Structures to hold accumulators for each mode and cell line
+        self.gene_accumulators = {'raw': {}, 'cp10k': {}}
+        self.gsea_global_accumulators = {'raw': {}, 'cp10k': {}}
+        self.gsea_moa_accumulators = {'raw': {}, 'cp10k': {}}
 
-        for column in ['lead_genes', 'moa_target_genes']:
-            if column not in self.__gsea_axis.columns:
-                continue
+        self.gene_metadata = gene_metadata
 
-            self.__gsea_axis.loc[mask, column] = (
-                self.__gsea_axis.loc[mask, column].apply(
-                    lambda genes: self.add_influence_score_to_lead_genes(
-                        influence_lookup, genes
-                    ) if pd.notna(genes) else genes
-                )
+        # load GSEA data
+        self.gsea_global_df = (
+            pd.read_csv(gsea_global_shared_axis_hallmark)
+            if gsea_global_shared_axis_hallmark
+            else None
+        )
+
+        self.gsea_moa_df = (
+            pd.read_csv(gsea_moa_shared_axis_hallmark)
+            if gsea_moa_shared_axis_hallmark
+            else None
+        )
+
+        # GSEA masks, to mask the specific pathway
+        self.gsea_global_masks = {'raw': {}, 'cp10k': {}}
+        self.gsea_moa_masks = {'raw': {}, 'cp10k': {}}
+
+    def exists(self, mode: str, cell_line_id: str) -> bool:
+        """Check if a given mode/cell line combo has been encountered."""
+        return cell_line_id in self.gene_accumulators[mode]
+
+    def __build_pathway_masks(self, group_ids, n_genes):
+        """Build Boolean pathway-by-gene membership matrix."""
+
+        masks = np.zeros(
+            (len(group_ids), n_genes),
+            dtype=bool,
+        )
+
+        for i, indices in enumerate(group_ids.values()):
+            masks[i, indices] = True
+
+        return masks
+
+    def __build_pathway_groups(self, gsea_df, symbol_to_id):
+        """Map GSEA leading-edge genes to token IDs."""
+
+        group_ids = {}
+
+        for _, row in gsea_df.iterrows():
+            lead_genes = (
+                row['lead_genes'].split(';')
+                if pd.notna(row['lead_genes'])
+                else []
             )
 
-    def to_csv(self, outfile: Path) -> None:
-        self.__gsea_axis.to_csv(outfile, index=False)
+            indices = [
+                symbol_to_id[gene]
+                for gene in lead_genes
+                if gene in symbol_to_id
+            ]
+
+            if indices:
+                group_ids[row['term']] = indices
+
+        return group_ids
+
+    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path) -> None:
+        """Initialize accumulators for the given cell line and mode."""
+
+        # map gene IDs (integers) to human readable gene names
+        gene_ids = load_gene_ids(ctrl_gene_expressions_dir, cell_line_id)
+        metadata_by_id = self.gene_metadata.set_index('token_id')['gene_symbol']
+
+        token_id_to_position = {
+            gene_id: i
+            for i, gene_id in enumerate(gene_ids)
+        }
+
+        symbol_to_position = {
+            metadata_by_id.loc[gene_id]: position
+            for gene_id, position in token_id_to_position.items()
+            if gene_id in metadata_by_id.index
+        }
+
+        # Gene accumulator for this cell line and mode
+        gene_groups = {
+            metadata_by_id.loc[gene_id]: [position]
+            for gene_id, position in token_id_to_position.items()
+            if gene_id in metadata_by_id.index
+        }
+
+        if len(gene_groups) != len(gene_ids):
+            raise ValueError(
+                f"Gene metadata mismatch for {cell_line_id}: "
+                f"{len(gene_groups)} mapped genes, {len(gene_ids)} vector genes"
+            )
+
+        self.gene_accumulators[mode][cell_line_id] = InfluenceAccumulator(gene_groups)
+
+        # Global GSEA accumulator for this cell line and mode
+        if self.gsea_global_df is not None:
+            global_df = self.gsea_global_df[
+                (self.gsea_global_df['cell_line'] == cell_line_id)
+                & (self.gsea_global_df['mode'] == mode)
+            ]
+
+            global_groups = self.__build_pathway_groups(global_df, symbol_to_position)
+            if global_groups:
+                self.gsea_global_accumulators[mode][cell_line_id] = \
+                    InfluenceAccumulator(global_groups)
+
+                self.gsea_global_masks[mode][cell_line_id] = \
+                    self.__build_pathway_masks(global_groups, len(gene_ids))
+
+        # MOA-specific GSEA accumulators for this cell line and mode
+        if self.gsea_moa_df is not None:
+            moa_df = self.gsea_moa_df[
+                (self.gsea_moa_df['cell_line'] == cell_line_id)
+                & (self.gsea_moa_df['mode'] == mode)
+            ]
+
+            for moa, group_df in moa_df.groupby('moa'):
+                moa_groups = self.__build_pathway_groups(group_df, symbol_to_position)
+                if moa_groups:
+                    self.gsea_moa_accumulators[mode][(cell_line_id, moa)] = \
+                        InfluenceAccumulator(moa_groups)
+
+                    self.gsea_moa_masks[mode][(cell_line_id, moa)] = \
+                        self.__build_pathway_masks(moa_groups, len(gene_ids))
+
+    def __summarize_group_influence(self, group_id: str, influence: dict) -> dict:
+        """Summarize accumulated influence for a gene group."""
+        summary = {'group_id': group_id}
+
+        # averages over instances
+        num_instances = influence['num_instances']
+        num_positive_instances = influence['num_positive_instances']
+        num_negative_instances = influence['num_negative_instances']
+
+        summary.update({
+            'mean_influence': influence['total_influence'] / num_instances,
+            'mean_abs_influence': influence['total_influence_abs'] / num_instances,
+            'mean_positive_influence': (
+                influence['positive_influence'] / num_positive_instances
+                if num_positive_instances else 0
+            ),
+            'mean_negative_influence': (
+                influence['negative_influence'] / num_negative_instances
+                if num_negative_instances else 0
+            )
+        })
+
+        # rest report as is
+        summary.update(influence)
+        return summary
+
+    def __summarize_accumulation(
+        self,
+        influences: dict,
+        extra_fields: dict | None = None,
+        n_groups: int | None = None,
+        outfile: Path | None = None
+    ) -> pd.DataFrame:
+        """Summarize the given accumulation of influences."""
+        summary = []
+        for group_id, influence in influences.items():
+            row = self.__summarize_group_influence(group_id, influence)
+            if extra_fields:
+                row.update(extra_fields)
+
+            summary.append(row)
+
+        df = pd.DataFrame(summary)
+
+        # if specified, only keep the largest groups by mean_abs_influence
+        if n_groups:
+            df = df.nlargest(n_groups, 'mean_abs_influence')
+
+        if outfile is not None:
+            df.to_csv(outfile, index=False)
+
+        return df
+
+    def finalize_gene_influences(
+        self,
+        mode: str,
+        n_per_cell_line: int = 200,
+        n_per_global: int = 1000,
+    ) -> None:
+        """Finalize by gene for each cell line and across all cell lines.
+
+        Since there are a lot of genes, only keep n per cell line and m per global.
+        """
+        output_dir = self.output_dir / 'gene_influences'
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # to aggregate influence across all cell lines
+        global_gene_influences = {}
+        top_genes_by_cell_line = []
+
+        for cell_line_id, accumulator in self.gene_accumulators[mode].items():
+            influences = accumulator.get_accumulation()
+            if not influences:
+                continue
+
+            # summarize influence for this cell line, and 
+            df = self.__summarize_accumulation(
+                influences,
+                extra_fields={'cell_line_id': cell_line_id},
+                n_groups=n_per_cell_line,
+            )
+            top_genes_by_cell_line.append(df)
+
+            # aggregate influence globally
+            for gene_id, influence in influences.items():
+                if gene_id not in global_gene_influences:
+                    global_gene_influences[gene_id] = {
+                        key: 0
+                        for key in influence
+                    }
+                    # keep track of which cell lines had the given gene
+                    global_gene_influences[gene_id]['cell_lines'] = set()
+
+                global_gene = global_gene_influences[gene_id]
+                global_gene['cell_lines'].add(cell_line_id)
+
+                for key, value in influence.items():
+                    global_gene[key] += value
+
+        # save results
+        if top_genes_by_cell_line:
+            top_genes_by_cell_line_df = pd.concat(top_genes_by_cell_line, ignore_index=True)
+            del top_genes_by_cell_line
+
+            top_genes_by_cell_line_df.to_csv(
+                output_dir / f'systema_{mode}_top{n_per_cell_line}_by_cell_line_id_{self.cur_time}.csv',
+                index=False
+            )
+            del top_genes_by_cell_line_df
+
+        if global_gene_influences:
+            for influence in global_gene_influences.values():
+                influence['cell_lines'] = sorted(influence['cell_lines'])
+
+            self.__summarize_accumulation(
+                global_gene_influences,
+                n_groups=n_per_global,
+                outfile=output_dir / f'systema_{mode}_top{n_per_global}_global_{self.cur_time}.csv'
+            )
+
+        # release memory
+        self.gene_accumulators[mode].clear()
+
+    def finalize_gsea_influences(self, mode: str) -> None:
+        """Finalize and clean up accumulators for the given cell line and mode for
+        GSEA terms. Since not many pathways in the grand scheme of things, keep all
+        of them.
+        """
+        output_dir = self.output_dir / 'gsea_influences'
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # by GSEA global
+        global_rows = []
+        for cell_line_id, accumulator in self.gsea_global_accumulators[mode].items():
+            influences = accumulator.get_accumulation()
+            if not influences:
+                continue
+
+            df = self.__summarize_accumulation(
+                influences,
+                extra_fields={'cell_line_id': cell_line_id}
+            )
+            global_rows.append(df)
+
+        if global_rows:
+            pd.concat(global_rows, ignore_index=True).to_csv(
+                output_dir / f'systema_{mode}_gsea_influence_global_{self.cur_time}.csv',
+                index=False,
+            )
+
+        moa_rows = []
+        for (cell_line_id, moa), accumulator in self.gsea_moa_accumulators[mode].items():
+            influences = accumulator.get_accumulation()
+            if not influences:
+                continue
+
+            df = self.__summarize_accumulation(
+                influences,
+                extra_fields={'cell_line_id': cell_line_id, 'moa': moa},
+            )
+
+            moa_rows.append(df)
+
+        if moa_rows:
+            pd.concat(moa_rows, ignore_index=True).to_csv(
+                output_dir / f'systema_{mode}_gsea_moa_{self.cur_time}.csv',
+                index=False,
+            )
+
+        # release memory
+        self.gsea_global_accumulators[mode].clear()
+        self.gsea_moa_accumulators[mode].clear()
+        self.gsea_global_masks[mode].clear()
+        self.gsea_moa_masks[mode].clear()

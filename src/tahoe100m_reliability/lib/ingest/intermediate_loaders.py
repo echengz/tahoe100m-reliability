@@ -153,7 +153,7 @@ def load_reliable_conditions(
 
 
 def load_gene_ids(ctrl_dir: Path, cell_line_id: str) -> np.array:
-    """Load the gene names (integers) from the control parquet file. Expects
+    """Load the gene IDs (integers) from the control parquet file. Expects
     column order to align with the delta_p values.
     """
     reference_parquet = ctrl_dir / f'{cell_line_id}_gene_expressions.parquet'

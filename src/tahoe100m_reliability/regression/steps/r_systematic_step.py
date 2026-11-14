@@ -102,11 +102,6 @@ class RegressionSystematicStep(SystematicStep):
         baseline_systema_df = pd.read_csv(self.baseline_dir / f'systema_cc_{ds_name}.csv')
         baseline_merged_df = pd.read_csv(self.baseline_dir / f'systema_cc_reliability_2d_{ds_name}.csv')
 
-        # systema_df = systema_df.drop(columns=['n_perts_in_context'])
-        # merged_df = merged_df.drop(columns=['n_perts_in_context'])
-        # baseline_systema_df = baseline_systema_df.drop(columns=['n_perts_in_context'])
-        # baseline_merged_df = baseline_merged_df.drop(columns=['n_perts_in_context'])
-
         # clean up known differences
         # duplicate of the dataset column from old framework's merge, can ignore
         baseline_merged_df = baseline_merged_df.drop(columns=['dataset_rel'])
