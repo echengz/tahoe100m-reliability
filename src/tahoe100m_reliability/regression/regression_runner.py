@@ -9,8 +9,10 @@ from pathlib import Path
 
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
-from .steps.r_reliability_step import RegressionReliabilityStep
-from .steps.r_systematic_step import RegressionSystematicStep
+from .steps import (
+    RegressionReliabilityStep,
+    RegressionSystematicStep,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ class RegressionPipelineRunner(PipelineStep):
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for the regression reliability step to the given parser."""
+        """Add CLI args for the regression pipeline to the given parser."""
         parser.add_argument(
             '-i', '--input-dir', dest='input_dir', required=True, type=Path,
             help='Input directory containing h5ad files for the original cellular datasets'

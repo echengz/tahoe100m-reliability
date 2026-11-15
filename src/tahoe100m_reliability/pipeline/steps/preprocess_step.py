@@ -4,7 +4,10 @@ Runs step 0 of the pipeline: preprocessing.
 import argparse
 import ast
 import logging
+
 from pathlib import Path
+from scipy.spatial.distance import pdist
+from scipy.cluster.hierarchy import linkage, fcluster
 
 from tahoe100m_reliability.lib.ingest.hg_duckdb_query import batch_duckdb_query
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
@@ -30,13 +33,14 @@ class PreprocessStep(PipelineStep):
 
     def __init__(
         self,
+        output_dir: Path,
         treatment_sets_dir: Path,
         parquet_shard_start: int = 0,
         control_gene_expressions_dir: Path | None = None,
     ) -> None:
         """Initialize the preprocess step."""
         super().__init__()
-
+        self.output_dir = output_dir
         self.treatment_sets_dir = treatment_sets_dir
         self.parquet_shard_start = parquet_shard_start
         self.control_gene_expressions_dir = control_gene_expressions_dir
@@ -49,6 +53,12 @@ class PreprocessStep(PipelineStep):
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         """Add CLI args for the preprocess step to the given parser."""
+        parser.add_argument(
+            '--output-dir', dest='output_dir',
+            type=Path, required=True,
+            help='Path to write results to'
+        )
+
         parser.add_argument(
             '--treatment-sets-dir', dest='treatment_sets_dir',
             type=Path, required=True,
@@ -215,11 +225,53 @@ class PreprocessStep(PipelineStep):
                 for sample in treatment['samples']
             }
 
-        with (self.treatment_sets_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
+        with (self.output_dir / 'combined_indexed_treatment_sets.json').open('w') as fh:
             json.dump([
                 treatment.model_dump(mode='json')
                 for treatment in treatment_sets.values()
             ], fh, indent=4)
+
+    def cluster_treatments(self, treatment_sets: list[TreatmentSet]) -> None:
+        """Cluster the treatments."""
+        rows = []
+        for treatment in treatment_sets:
+            shards = {
+                int(p.split("train-")[1].split("-of-")[0])
+                for p in treatment.parquet_files
+            }
+
+            rows.append({
+                'drug': treatment.drug,
+                'dosage': treatment.dosage,
+                'shards': shards,
+            })
+
+        log.info(f"{len(rows)} unique perturbations")
+
+        df = pd.DataFrame(rows)
+
+        # binary matrix
+        matrix = np.zeros((len(df), 3389), dtype=np.uint8)
+        for i, shards in enumerate(df["shards"]):
+            matrix[i, list(shards)] = 1
+
+
+        # pre-analysis of the treatments show that drugs/dosages are "clustered"
+        # within blocks of parquet files, in particular 13 of them. so
+        # properly identify these clusters with Jaccard clustering so we can
+        # iterate over them
+        distance = pdist(matrix, metric='jaccard')
+        Z = linkage(distance, method='average')
+        labels = fcluster(
+            Z,
+            t=13,
+            criterion="maxclust",
+        )
+
+        df['cluster'] = labels
+        df[['drug', 'dosage', 'cluster']].to_csv(
+            self.output_dir / 'clustered_treatments.csv', index=False
+        )
 
     def build_control_gene_expressions(self, treatment_sets: list[TreatmentSet]) -> None:
         """Evaluate the control groups and build their expression matrices."""
@@ -315,6 +367,9 @@ class PreprocessStep(PipelineStep):
         # 3. Evaluate treatment sets to ensure they are valid
         self.evaluate_treatment_sets(treatment_sets)
 
-        # 4. Generate control gene expression matrices
+        # 4. Cluster treatments
+        self.cluster_treatments(treatment_sets)
+
+        # 5. Generate control gene expression matrices
         if self.control_gene_expressions_dir:
             self.build_control_gene_expressions(treatment_sets)

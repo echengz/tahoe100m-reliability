@@ -328,7 +328,7 @@ class ReliabilityStep(BaseReliabilityStep):
         self,
         indexed_treatments_file: Path,
         ctrl_gene_expressions_dir: Path,
-        drug_dosages_csv: Path,
+        clustered_treatments_csv: Path,
         normalize_cp10k: bool = False,
         clusters: str | None = None,
         target_cell_lines_csv: Path | None = None,
@@ -341,7 +341,7 @@ class ReliabilityStep(BaseReliabilityStep):
         super().__init__(**kwargs)
         self.index_treatment_file = indexed_treatments_file
         self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir
-        self.drug_dosages_csv = drug_dosages_csv
+        self.clustered_treatments_csv = clustered_treatments_csv
         self.normalize_cp10k = normalize_cp10k
         self.clusters = [int(x.strip()) for x in clusters.split(',')] if clusters else None
         self.target_cell_lines_csv = target_cell_lines_csv
@@ -376,8 +376,8 @@ class ReliabilityStep(BaseReliabilityStep):
                 + 'cell lines, each an individual parquet file.'
         )
         parser.add_argument(
-            '-d', '--drug-dosages-csv', dest='drug_dosages_csv', required=True, type=Path,
-            help='Path to a CSV file listing all the drug x dosage combinations with their cluster index.'
+            '--clustered-treatments-csv', dest='clustered_treatments_csv', required=True, type=Path,
+            help='Path to a CSV file listing all the drug x dosage treatments with their cluster index.'
         )
         parser.add_argument(
             '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
@@ -691,7 +691,7 @@ class ReliabilityStep(BaseReliabilityStep):
         # Build target treatment list
         clustered_treatments = TreatmentSet.load_clusters_from_file(
             treatments_file=self.indexed_treatments_file,
-            drug_dosages=self.drug_dosages_csv,
+            drug_dosages=self.clustered_treatments_csv,
             target_clusters=self.clusters
         )
 

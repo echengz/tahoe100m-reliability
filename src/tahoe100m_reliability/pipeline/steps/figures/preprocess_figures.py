@@ -22,7 +22,12 @@ log = logging.getLogger(__name__)
 
 class PreprocessFigures:
 
-    def __init__(self, treatment_sets: list[TreatmentSet], output_dir: Path) -> None:
+    def __init__(
+        self,
+        treatment_sets: list[TreatmentSet],
+        clustered_treatments_csv: Path,
+        output_dir: Path,
+    ) -> None:
         """Initializes class to generate preprocessing figuers."""
 
         # We don't care about the controls for these, so filter out
@@ -30,6 +35,7 @@ class PreprocessFigures:
             treatment for treatment in treatment_sets
             if treatment.drug != 'DMSO_TF'
         ]
+        self.__clustered_treatments = pd.read_csv(clustered_treatments_csv)
         self.__output_dir = output_dir
 
     def __generate_shard_count_figure(self) -> None:
@@ -177,24 +183,17 @@ class PreprocessFigures:
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_dosage_distribution.png')
 
-        # the output of the above shows that drugs/dosages are "clustered"
-        # within blocks of parquet files, in particular 13 of them. so
-        # use figure out clusters so we can iterate over these in the next step
-        n_clusters = 13
-
-        # Jaccard
-        distance = pdist(matrix, metric='jaccard')
-        Z = linkage(distance, method='average')
-        labels = fcluster(
-            Z,
-            t=n_clusters,
-            criterion="maxclust",
+        # Add precomputed cluster assignments
+        df = df.merge(
+            self.__clustered_treatments[["drug", "dosage", "cluster"]],
+            on=["drug", "dosage"],
+            how="left",
+            validate="one_to_one",
         )
 
-        df['cluster'] = labels
-        df[['drug', 'dosage', 'cluster']].to_csv(
-            self.__output_dir / 'clustered_treatments.csv', index=False
-        )
+        # Check that every treatment has a cluster
+        if df["cluster"].isna().any():
+            raise ValueError("Some treatments have no cluster assignment")
 
         clusters = (
             df.groupby('cluster').agg(

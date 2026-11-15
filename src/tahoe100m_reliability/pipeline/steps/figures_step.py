@@ -43,8 +43,8 @@ class FiguresStep(PipelineStep):
         preprocess_dir: Path | None = None,
         reliability_raw_dir: Path | None = None,
         reliability_cp10k_dir: Path | None = None,
-        systematic_dir: Path | None = None,
         gsea_dir: Path | None = None,
+        systematic_dir: Path | None = None,
     ) -> None:
         """Initialize the step."""
         self.__output_dir = output_dir
@@ -52,8 +52,8 @@ class FiguresStep(PipelineStep):
         self.__preprocess_dir = preprocess_dir
         self.__reliability_raw_dir = reliability_raw_dir
         self.__reliability_cp10k_dir = reliability_cp10k_dir
-        self.__systematic_dir = systematic_dir
         self.__gsea_dir = gsea_dir
+        self.__systematic_dir = systematic_dir
 
     @classmethod
     def create_from_args(cls, args: argparse.Namespace) -> "FiguresStep":
@@ -86,12 +86,12 @@ class FiguresStep(PipelineStep):
             help="Path to the normalized (CP10K) reliability resuls"
         )
         parser.add_argument(
-            '--systematic-dir', dest='systematic_dir', type=Path,
-            help='Path to the systematic results (assumes both raw and cp10k are in there)'
-        )
-        parser.add_argument(
             '--gsea-dir', dest='gsea_dir', type=Path,
             help='Path to GSEA step results'
+        )
+        parser.add_argument(
+            '--systematic-dir', dest='systematic_dir', type=Path,
+            help='Path to the systematic results (assumes both raw and cp10k are in there)'
         )
 
     def __generate_preprocessing_figures(self):
@@ -108,7 +108,10 @@ class FiguresStep(PipelineStep):
         preprocess_output_dir = self.__output_dir / 'preprocess'
         preprocess_output_dir.mkdir(parents=True, exist_ok=True)
 
-        figures = PreprocessFigures(treatment_sets, preprocess_output_dir)
+        clustered_treatments_csv = self.__preprocess_dir / 'clustered_treatments.json'
+        figures = PreprocessFigures(
+            treatment_sets, clustered_treatments_csv, preprocess_output_dir
+        )
         figures.generate_figures()
 
     def __generate_reliability_figures(self):
