@@ -205,47 +205,47 @@ class FiguresStep(PipelineStep):
             else:
                 log.info("Plotting cell line x MOA axes")
 
-                # for moa, moa_df in df.groupby("moa"):
-                #     # Make name filesystem-safe
-                #     safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
-                #     log.info(f"Plotting MOA axis: {moa}")
+                for moa, moa_df in df.groupby("moa"):
+                    # Make name filesystem-safe
+                    safe_moa = re.sub(r"[^A-Za-z0-9._-]+", "_", str(moa).lower())
+                    log.info(f"Plotting MOA axis: {moa}")
 
-                #     indv_heatmaps.plot_heatmaps(
-                #         gsea_df=moa_df, filename_prefix=f"gsea_moa_{safe_moa}", title_postfix=moa
-                #     )
+                    indv_heatmaps.plot_heatmaps(
+                        gsea_df=moa_df, filename_prefix=f"gsea_moa_{safe_moa}", title_postfix=moa
+                    )
 
                 for mode in ['raw', 'cp10k']:
-                    # # load MOA cluster assignments
-                    # moa_cluster_assignments = pd.read_csv(
-                    #     self.__gsea_dir / 'moa_clustering' / mode / f'{mode}_moa_cluster_assignments.csv'
-                    # )
+                    # load MOA cluster assignments
+                    moa_cluster_assignments = pd.read_csv(
+                        self.__gsea_dir / 'moa_clustering' / mode / f'{mode}_moa_cluster_assignments.csv'
+                    )
 
-                    # moa_clusters = {
-                    #     cluster: sorted(moas)
-                    #     for cluster, moas in moa_cluster_assignments.groupby("cluster")["moa"]
-                    # }
-                    # moa_order = []
+                    moa_clusters = {
+                        cluster: sorted(moas)
+                        for cluster, moas in moa_cluster_assignments.groupby("cluster")["moa"]
+                    }
+                    moa_order = []
 
-                    # # Plot clustered MOA GSEA results
-                    # for cluster, moas in moa_clusters.items():
-                    #     radial_heatmaps.plot_moa_radial_heatmaps(
-                    #         gsea_df=df[df["moa"].isin(moas)],
-                    #         mode=mode,
-                    #         filename_prefix=f"gsea_radial_by_moa_cluster{cluster}",
-                    #         title=f'Hallmark GSEA by MOA - Cluster {cluster}'
-                    #     )
+                    # Plot clustered MOA GSEA results
+                    for cluster, moas in moa_clusters.items():
+                        radial_heatmaps.plot_moa_radial_heatmaps(
+                            gsea_df=df[df["moa"].isin(moas)],
+                            mode=mode,
+                            filename_prefix=f"gsea_radial_by_moa_cluster{cluster}",
+                            title=f'Hallmark GSEA by MOA - Cluster {cluster}'
+                        )
 
-                    #     moa_order.extend(moas)
+                        moa_order.extend(moas)
 
-                    # # Plot overall GSEA results
-                    # radial_heatmaps.plot_moa_radial_heatmaps(
-                    #     gsea_df=df,
-                    #     mode=mode,
-                    #     filename_prefix=f"gsea_radial_all",
-                    #     moa_order=moa_order,
-                    #     title='Hallmark GSEA by MOA - All',
-                    #     moa_clusters=moa_clusters,
-                    # )
+                    # Plot overall GSEA results
+                    radial_heatmaps.plot_moa_radial_heatmaps(
+                        gsea_df=df,
+                        mode=mode,
+                        filename_prefix=f"gsea_radial_all",
+                        moa_order=moa_order,
+                        title='Hallmark GSEA by MOA - All',
+                        moa_clusters=moa_clusters,
+                    )
 
                     # if systematic influence results exist for GSEA, merge them in and plot
                     influence_df, influence_exists = self.__merge_influence_with_gsea(df, mode)
