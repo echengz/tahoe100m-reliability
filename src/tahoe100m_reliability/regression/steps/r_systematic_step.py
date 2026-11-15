@@ -19,6 +19,7 @@ framework, and therefore derive from this inheritence chain. But there
 are several input assumptions we make for Tahoe-100M that are not true for
 Wei et al.
 """
+import logging
 import pandas as pd
 import time
 from pathlib import Path
@@ -27,6 +28,10 @@ from tahoe100m_reliability.lib.step.base_systematic_step import DeltaPMode
 from tahoe100m_reliability.pipeline.steps.systematic_step import SystematicStep
 
 from .datasets import CELLULAR_DATASETS
+
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 class RegressionSystematicStep(SystematicStep):
@@ -134,6 +139,8 @@ class RegressionSystematicStep(SystematicStep):
             check_exact=False, rtol=rtol, atol=atol,
         )
 
+        log.info(f"{ds_name} passed systematic regression test!")
+
     def run(self) -> None:
         """Run the systematic step and then compare summary results against baseline."""
         super().run()
@@ -143,3 +150,5 @@ class RegressionSystematicStep(SystematicStep):
         )
         baseline_summary_df = pd.read_csv(self.baseline_dir / 'systema_cc_summary.csv')
         pd.testing.assert_frame_equal(summary_df, baseline_summary_df)
+
+        log.info(f"All datasets passed systematic regression test!")

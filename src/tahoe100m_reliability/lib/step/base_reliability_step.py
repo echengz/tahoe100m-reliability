@@ -40,6 +40,8 @@ class BaseReliabilityStep(PipelineStep):
         self.n_repeats = n_repeats
         self.expr_k = expr_k
         self.workers = workers
+        self.seed = seed
+
         self.n_half_grid = sorted(
             {int(x.strip()) for x in n_half_grid.split(",") if x.strip()}
         )
@@ -196,7 +198,7 @@ class BaseReliabilityStep(PipelineStep):
         log.info(f"\n  ── Summary for cluster {cluster} ──")
         log.info(f"  Conditions processed: {len(df_summary)}")
 
-        for gene_mode in ["all_genes", f"top{self.args.expr_k}_expr"]:
+        for gene_mode in ["all_genes", f"top{self.expr_k}_expr"]:
             col_sb_mean = f"sb_from_mean_{gene_mode}"
             col_sb_median = f"sb_from_median_{gene_mode}"
             col_ceil = f"ceiling_from_mean_{gene_mode}"

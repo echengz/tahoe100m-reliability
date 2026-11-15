@@ -7,6 +7,6 @@ from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
 class Tahoe100mPipelineRunner(PipelineStep):
 
-    def run(self, args: argparse.Namespace) -> None:
+    def run(self) -> None:
         """Run the full pipeline."""
         print("not yet implemented")
