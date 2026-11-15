@@ -428,7 +428,7 @@ class InfluenceAccumulatorHandler:
 
         if global_rows:
             pd.concat(global_rows, ignore_index=True).to_csv(
-                output_dir / f'systema_{mode}_gsea_influence_global_{self.cur_time}.csv',
+                output_dir / f'systema_{mode}_gsea_global_{self.cur_time}.csv',
                 index=False,
             )
 

@@ -237,54 +237,6 @@ class GseaStep(BaseSystematicStep):
 
         return results["global"], results["moa"]
 
-    def __cluster_moa_results(self, df: pd.DataFrame) -> None:
-        """Cluster MOAs independently for each mode by NES values."""
-        log.info("Clustering MOA results...")
-
-        output_dir = self.output_dir / "moa_clustering"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        df = df[["mode", "moa", "term", "nes"]].copy()
-        df["nes"] = pd.to_numeric(df["nes"], errors="coerce")
-        df = df.dropna(subset=["mode", "moa", "term", "nes"])
-        df["term"] = df["term"].astype(str).str.strip()
-
-        for mode, mode_df in df.groupby("mode"):
-            # Average NES across cell lines for each MOA and pathway.
-            profiles = (
-                mode_df.groupby(["moa", "term"])["nes"]
-                .mean()
-                .unstack("term")
-            )
-
-            # Retain pathways with sufficient coverage across MOAs.
-            coverage = profiles.notna().mean(axis=0)
-            profiles = profiles.loc[:, coverage >= CLUSTER_MIN_PATHWAY_COVERAGE]
-
-            profiles = profiles.fillna(profiles.mean(axis=0))
-            profiles = profiles.loc[:, profiles.std(axis=0) > 1e-12]
-
-            profiles.to_csv(output_dir / f"{mode}_moa_hallmark_nes_profiles.csv")
-
-            distances = pdist(profiles.values, metric="euclidean")
-            Z = linkage(distances, method="average")
-
-            cluster_labels = fcluster(
-                Z,
-                t=min(self.__num_moa_clusters, len(profiles)),
-                criterion="maxclust",
-            )
-
-            moa_clusters = pd.DataFrame({
-                "moa": profiles.index,
-                "cluster": cluster_labels,
-            }).sort_values(["cluster", "moa"])
-
-            moa_clusters.to_csv(
-                output_dir / f"{mode}_moa_cluster_assignments.csv",
-                index=False,
-            )
-
     def __moa_pca_and_cluster(self, mode: str, df: pd.DataFrame) -> None:
         """Run PCA on MOA GSEA results and cluster based on centroids.
 

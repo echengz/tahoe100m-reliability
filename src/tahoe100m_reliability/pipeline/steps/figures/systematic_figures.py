@@ -34,30 +34,30 @@ class BaseSystematicFigures:
 
     def grab_latest_systema_results(self, prefix: str) -> pd.DataFrame:
         """Grab the latest systema results."""
+        prefix_path = Path(prefix)
+        search_dir = self.systema_dir / prefix_path.parent
+        filename_prefix = prefix_path.name
+
         dated_pattern = re.compile(
-            rf"^{re.escape(prefix)}_(\d{{8}}-\d{{6}})\.csv$"
+            rf"^{re.escape(filename_prefix)}_(\d{{8}}-\d{{6}})\.csv$"
         )
-        earliest_file = {
-            'path': None,
-            'timestamp': None
-        }
 
-        for path in self.systema_dir.glob(f"{prefix}*.csv"):
+        latest_file = {"path": None, "timestamp": None}
+
+        for path in search_dir.glob(f"{filename_prefix}_*.csv"):
             match = dated_pattern.match(path.name)
+
             if match:
-                timestamp = match.groups()[0]
-                timestamp = datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
+                timestamp = datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
 
-                if earliest_file['timestamp'] is None or timestamp < earliest_file['timestamp']:
-                    earliest_file = {
-                        'path': path,
-                        'timestamp': timestamp
-                    }
+                if latest_file["timestamp"] is None or timestamp > latest_file["timestamp"]:
+                    latest_file = {"path": path, "timestamp": timestamp}
 
-        if earliest_file['path'] is None:
-            raise FileNotFoundError(f"Cannot find {prefix} file (may be missing timestamp?)")
+        if latest_file["path"] is None:
+            raise FileNotFoundError(f"Cannot find {prefix} file in {search_dir} (may be missing timestamp?)")
 
-        return pd.read_csv(earliest_file['path'])
+        log.info("Loading latest results from %s", latest_file["path"])
+        return pd.read_csv(latest_file["path"])
 
 
 class SystematicFigures(BaseSystematicFigures):
@@ -258,26 +258,26 @@ class SystematicFigures(BaseSystematicFigures):
         group-specific gene influence against global influence.
         """
         global_df = self.grab_latest_systema_results(
-            prefix=f'systema_cc_{self.mode}_top1000_influential_genes'
+            prefix=f'gene_influences/systema_{self.mode}_top1000_global'
         )
 
         ranking_col = 'total_influence_abs'
         influence_cols = [
-            'avg_influence',
-            'avg_positive_influence',
-            'avg_negative_influence'
+            'mean_influence',
+            'mean_positive_influence',
+            'mean_negative_influence'
         ]
 
         # Select top N genes based on global influence
         top_genes_df = (
             global_df
             .sort_values(ranking_col, ascending=False)
-            .drop_duplicates('gene_symbol')
+            .drop_duplicates('group_id')
             .head(top_n)
             .copy()
         )
 
-        top_genes = top_genes_df['gene_symbol'].tolist()
+        top_genes = top_genes_df['group_id'].tolist()
 
         # Consistent colors across all subplots
         palette = dict(zip(
@@ -285,14 +285,14 @@ class SystematicFigures(BaseSystematicFigures):
             sns.color_palette('turbo', len(top_genes))
         ))
 
-        for group in ['cell_line_id', 'moa']:
+        for group in ['cell_line_id']:
 
             df = self.grab_latest_systema_results(
-                prefix=f'systema_cc_{self.mode}_top200_influential_genes_by_{group}'
+                prefix=f'gene_influences/systema_{self.mode}_top200_by_{group}'
             )
 
             # Only retain globally selected genes
-            df = df[df['gene_symbol'].isin(top_genes)].copy()
+            df = df[df['group_id'].isin(top_genes)].copy()
 
             if df.empty:
                 raise ValueError(
@@ -317,7 +317,7 @@ class SystematicFigures(BaseSystematicFigures):
 
                 # Group-specific observations
                 group_plot_df = df[
-                    ['gene_symbol', group, influence_col]
+                    ['group_id', group, influence_col]
                 ].dropna().copy()
 
                 group_plot_df = group_plot_df.rename(
@@ -326,7 +326,7 @@ class SystematicFigures(BaseSystematicFigures):
 
                 # Global observations
                 global_plot_df = top_genes_df[
-                    ['gene_symbol', influence_col]
+                    ['group_id', influence_col]
                 ].copy()
 
                 global_plot_df['group'] = 'Global'
@@ -347,7 +347,7 @@ class SystematicFigures(BaseSystematicFigures):
                     data=plot_df,
                     x='group',
                     y=influence_col,
-                    hue='gene_symbol',
+                    hue='group_id',
                     hue_order=top_genes,
                     palette=palette,
                     jitter=0.2,
@@ -378,7 +378,7 @@ class SystematicFigures(BaseSystematicFigures):
                         x_pos = categories.index(category)
 
                         ax.annotate(
-                            row['gene_symbol'],
+                            row['group_id'],
                             xy=(x_pos, row[influence_col]),
                             xytext=(5, 5),
                             textcoords='offset points',
@@ -478,34 +478,34 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         # Identify top genes in each dataset, and label their union
         n_top_genes = 8
         top_raw = set(
-            df.nlargest(n_top_genes, "mean_abs_influence_raw")["gene_symbol"]
+            df.nlargest(n_top_genes, "mean_abs_influence_raw")["group_id"]
             .dropna()
             .tolist()
         )
 
         top_cp10k = set(
-            df.nlargest(n_top_genes, "mean_abs_influence_cp10k")["gene_symbol"]
+            df.nlargest(n_top_genes, "mean_abs_influence_cp10k")["group_id"]
             .dropna()
             .tolist()
         )
 
         for _, row in plot_df[
-            plot_df["gene_symbol"].isin(top_raw | top_cp10k)
+            plot_df["group_id"].isin(top_raw | top_cp10k)
         ].iterrows():
             xytext = (4, 4)
 
             # adjust for specific genes
-            if row["gene_symbol"] == "MT-RNR1":
+            if row["group_id"] == "MT-RNR1":
                 xytext = (-30, 6)
-            elif row["gene_symbol"] in ["MT-ATP6", "FN1"]:
+            elif row["group_id"] in ["MT-ATP6", "FN1"]:
                 xytext = (4, 1)
-            elif row["gene_symbol"] == "IGFBP3":
+            elif row["group_id"] == "IGFBP3":
                 xytext = (2, 6)
-            elif row["gene_symbol"] == "MT-CO1":
+            elif row["group_id"] == "MT-CO1":
                 xytext = (4, 2)
 
             ax.annotate(
-                row["gene_symbol"],
+                row["group_id"],
                 (row["mean_abs_influence_raw"], row["mean_abs_influence_cp10k"]),
                 xytext=xytext,
                 textcoords="offset points",
@@ -518,7 +518,7 @@ class CombinedSystematicFigures(BaseSystematicFigures):
             (top_cp10k - top_raw, self.__colors['cp10k']),
             (top_raw & top_cp10k, self.__colors['combined']),
         ]:
-            subset = plot_df[plot_df["gene_symbol"].isin(genes)]
+            subset = plot_df[plot_df["group_id"].isin(genes)]
 
             ax.scatter(
                 subset["mean_abs_influence_raw"],
@@ -566,26 +566,26 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         # Create combined DF
         influence_cols = [
             "mean_abs_influence",
-            "avg_positive_influence",
-            "avg_negative_influence",
+            "mean_positive_influence",
+            "mean_negative_influence",
         ]
 
         raw_df = self.grab_latest_systema_results(
-            prefix="systema_cc_raw_top1000_influential_genes"
+            prefix="gene_influences/systema_raw_top1000_global"
         )
         cp10k_df = self.grab_latest_systema_results(
-            prefix="systema_cc_cp10k_top1000_influential_genes"
+            prefix="gene_influences/systema_cp10k_top1000_global"
         )
 
-        raw_df = raw_df[["token_id", "gene_symbol"] + influence_cols].rename(
+        raw_df = raw_df[["group_id"] + influence_cols].rename(
             columns={col: f"{col}_raw" for col in influence_cols}
         )
 
-        cp10k_df = cp10k_df[["token_id"] + influence_cols].rename(
+        cp10k_df = cp10k_df[["group_id"] + influence_cols].rename(
             columns={col: f"{col}_cp10k" for col in influence_cols}
         )
 
-        df = raw_df.merge(cp10k_df, on="token_id", how="inner")
+        df = raw_df.merge(cp10k_df, on="group_id", how="inner")
         del raw_df, cp10k_df
 
         # Log axes require strictly positive mean absolute influence
