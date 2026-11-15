@@ -18,20 +18,38 @@ log = logging.getLogger(__name__)
 # Fixed n_half values for the scaling curve.
 # Original 7-point grid (powers of 2). n_total = 2 * n_half spans 16-1024.
 DEFAULT_N_HALF_GRID = [8, 16, 32, 64, 128, 256, 512]
+DEFAULT_N_HALF_GRID_STR = ",".join(str(n) for n in DEFAULT_N_HALF_GRID)
 
 
 class BaseReliabilityStep(PipelineStep):
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        n_repeats: int = 100,
+        expr_k: int = 1000,
+        workers: int = 1,
+        seed: int = 42,
+        n_half_grid: str = DEFAULT_N_HALF_GRID_STR
+    ) -> None:
         """Initialize reliability step."""
-        super().__init__(args)
-        self.args = args
-        self.args.output_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__()
+        self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        self.n_repeats = n_repeats
+        self.expr_k = expr_k
+        self.workers = workers
         self.n_half_grid = sorted(
-            {int(x.strip()) for x in self.args.n_half_grid.split(",") if x.strip()}
+            {int(x.strip()) for x in n_half_grid.split(",") if x.strip()}
         )
-        self.delta_p_dir = self.args.output_dir / 'delta_p_raw'
+
+        self.delta_p_dir = self.output_dir / 'delta_p'
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "BaseReliabilityStep":
+        """Create BaseReliabilityStep from arguments."""
+        return cls(**vars(args))
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -61,11 +79,10 @@ class BaseReliabilityStep(PipelineStep):
             help='Random seed (default: 42)'
         )
 
-        n_half_default = ",".join(str(n) for n in DEFAULT_N_HALF_GRID)
         parser.add_argument(
-            "--n-half-grid", dest="n_half_grid", type=str, default=n_half_default,
+            "--n-half-grid", dest="n_half_grid", type=str, default=DEFAULT_N_HALF_GRID_STR,
             help="Comma-separated fractions of stimulated cells per split half "
-                + f"for the fixed-n curve. Default: {n_half_default}.",
+                + f"for the fixed-n curve. Default: {DEFAULT_N_HALF_GRID_STR}.",
         )
 
     def save_delta_p_results(
@@ -203,11 +220,11 @@ class BaseReliabilityStep(PipelineStep):
 
         # write to output
         df_long.to_csv(
-            self.args.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
+            self.output_dir / f'reliability_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
             index=False
         )
         df_summary.to_csv(
-            self.args.output_dir / f'reliability_summary_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
+            self.output_dir / f'reliability_summary_{dataset_name}_cluster_{cluster}_{self.cur_time}.csv',
             index=False
         )
         log.info(f"Wrote Pearson split-half reliability results for cluster {cluster}")

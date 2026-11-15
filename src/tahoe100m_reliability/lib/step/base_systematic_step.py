@@ -17,11 +17,15 @@ class DeltaPMode:
     """Handles what type of delta_p results we have"""
 
     def __init__(self, reliability_dir: Path | None, delta_p_dir: Path | None) -> None:
-        """Initializer. Pair can be missing, but must be provided together otherwise."""
-        if (delta_p_dir and not reliability_dir) or (reliability_dir and not delta_p_dir):
-            raise FileNotFoundError(
-                f"Reliability directory not provided for delta_p results {delta_p_dir}"
-            )
+        """Initializer. If reliability directory exists, so must delta_p directory."""
+
+        if reliability_dir:
+            if not reliability_dir.is_dir():
+                raise FileNotFoundError(f"Cannot find reliability directory: {reliability_dir}")
+            if not delta_p_dir:
+                raise FileNotFoundError(f"delta_p_dir not provided when reliability_dir was")
+            if not delta_p_dir.is_dir():
+                raise FileNotFoundError(f"Cannot find delta_p directory: {delta_p_dir}")
 
         self.reliability_dir = reliability_dir
         self.delta_p_dir = delta_p_dir
@@ -32,28 +36,44 @@ class BaseSystematicStep(PipelineStep):
     Base step; for pipeline steps that rely on the reliability
     and systematic delta p values.
     """
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        ctrl_gene_expressions_dir: Path,
+        output_dir: Path,
+        reliability_dir: Path | None = None,
+        reliability_cp10k_dir: Path | None = None,
+        clusters: str | None = None,
+    ) -> None:
         """Initializer."""
-        super().__init__(args)
+        super().__init__()
 
-        if not args.delta_p_raw_dir and not args.delta_p_cp10k_dir:
-            raise FileNotFoundError("At least one delta_p dir must be passed")
+        if not reliability_dir and not reliability_cp10k_dir:
+            raise FileNotFoundError("At least one reliability directory must be passed")
 
-        self.args = args
-        self.mode_mapping = {
-            'raw': DeltaPMode(args.reliability_raw_dir, args.delta_p_raw_dir),
-            'cp10k': DeltaPMode(args.reliability_cp10k_dir, args.delta_p_cp10k_dir)
-        }
+        # we renamed the directories, so try both
+        try:
+            self.mode_mapping = {
+                'raw': DeltaPMode(reliability_dir, reliability_dir / 'delta_p_raw'),
+                'cp10k': DeltaPMode(reliability_cp10k_dir, reliability_cp10k_dir / 'delta_p_cp10k')
+            }
+        except FileNotFoundError:
+            self.mode_mapping = {
+                'raw': DeltaPMode(reliability_dir, reliability_dir / 'systema'),
+                'cp10k': DeltaPMode(reliability_cp10k_dir, reliability_cp10k_dir / 'systema_cp10k')
+            }
 
-        self.ctrl_gene_expressions_dir = args.ctrl_gene_expressions_dir
-        self.output_dir = args.output_dir
-
-        self.clusters = set(
-            [int(x.strip()) for x in args.clusters.split(',')]
-        ) if args.clusters else None
-
+        self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir
+        self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.clusters = set([int(x.strip()) for x in clusters.split(',')]) if clusters else None
+
         self.gene_metadata = get_gene_metadata(to_pandas=True)
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "BaseSystematicStep":
+        """Create BaseSystematicStep from arguments."""
+        return cls(**vars(args))
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -66,32 +86,23 @@ class BaseSystematicStep(PipelineStep):
         )
 
         parser.add_argument(
-            '--reliability-raw-dir', dest='reliability_raw_dir', type=Path,
-            help="Path to the raw reliability results to serve as input data. Should "
-                 + "contain both reliability_summary_*_cluster_*.csv files"
-        )
-        parser.add_argument(
-            '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
-            help="Path to the CP10K reliability results to serve as input data. Should "
-                 + "contain both reliability_summary_*_cluster_*.csv files"
-        )
-
-        parser.add_argument(
-            '--delta-p-raw-dir', dest='delta_p_raw_dir', type=Path,
-            help='Path to raw delta_p scores'
-        )
-        parser.add_argument(
-            '--delta-p-cp10k-dir', dest='delta_p_cp10k_dir', type=Path,
-            help='Path to cp10k delta_p scores (normalized)'
-        )
-
-        parser.add_argument(
             '--output-dir', dest='output_dir', required=True, type=Path,
             help='Output directory to write results to'
         )
 
         parser.add_argument(
-            '--clusters', dest='clusters', required=False, type=str,
+            '--reliability-dir', dest='reliability_dir', type=Path,
+            help="Path to the raw reliability results to serve as input data. Should "
+                 + "contain both reliability_summary_*_cluster_*.csv files and delta_p_raw directory."
+        )
+        parser.add_argument(
+            '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
+            help="Path to the CP10K reliability results to serve as input data. Should "
+                 + "contain both reliability_summary_*_cluster_*.csv files and delta_p_cp10k directory"
+        )
+
+        parser.add_argument(
+            '--clusters', dest='clusters', type=str,
             help='Comma-deliminated list of specific cluster(s) to compute the '
                  + 'Systema systematic variation for; if not provided, defaults to '
                  + 'whatever data is available.'

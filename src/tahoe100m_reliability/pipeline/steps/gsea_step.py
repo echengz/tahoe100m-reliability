@@ -93,12 +93,18 @@ def gsea_nes(vec, genes_upper, hallmark_sets):
 
 class GseaStep(BaseSystematicStep):
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        num_top_pathways: int = 10,
+        num_moa_clusters: int = 4,
+        skip_moa_shared_axis: bool = False,
+        **kwargs,
+    ) -> None:
         """Initializer."""
-        super().__init__(args=args)
+        super().__init__(**kwargs)
         self.ds_name = 'tahoe100m'
-        self.num_top_pathways = args.num_top_pathways
-        self.skip_moa_shared_axis = args.skip_moa_shared_axis
+        self.num_top_pathways = num_top_pathways
+        self.skip_moa_shared_axis = skip_moa_shared_axis
 
         self.gene_metadata["token_id"] = self.gene_metadata["token_id"].astype(np.int64)
         self.id_to_symbol = dict(
@@ -107,8 +113,13 @@ class GseaStep(BaseSystematicStep):
             )
         )
 
-        self.__num_moa_clusters = args.num_moa_clusters
-        self.__hallmark_sets = load_hallmark_sets()
+        self.num_moa_clusters = num_moa_clusters
+        self.hallmark_sets = load_hallmark_sets()
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "GseaStep":
+        """Create GseaStep from arguments."""
+        return cls(**cls.clean_args(args))
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -116,18 +127,18 @@ class GseaStep(BaseSystematicStep):
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
-            '--num-top-pathways', dest='num_top_pathways', required=False, type=int, default=10,
+            '--num-top-pathways', dest='num_top_pathways', type=int, default=10,
             help='Number of top positive/negative NES pathways to retain'
+        )
+
+        parser.add_argument(
+            '--num-moa-clusters', dest='num_moa_clusters', type=int, default=4,
+            help='Number of clusters to generate from MOA results'
         )
 
         parser.add_argument(
             '--skip-moa-shared-axis', dest='skip_moa_shared_axis', action='store_true',
             help='Whether or not to skip calculation of the MOA shared axis results'
-        )
-
-        parser.add_argument(
-            '--num-moa-clusters', dest='num_moa_clusters', type=int, default=3,
-            help='Number of clusters to generate from MOA results'
         )
 
     def __run_gsea(
@@ -147,7 +158,7 @@ class GseaStep(BaseSystematicStep):
         shared = np.average(rel_deltas, axis=0, weights=rel_weights)
 
         genes_upper = [g.upper() for g in gene_symbols]
-        gsea = gsea_nes(shared, genes_upper, self.__hallmark_sets)
+        gsea = gsea_nes(shared, genes_upper, self.hallmark_sets)
 
         for term, stats in gsea.items():
             row = {
@@ -328,7 +339,7 @@ class GseaStep(BaseSystematicStep):
         )
         cluster_labels = fcluster(
             Z,
-            t=self.__num_moa_clusters,
+            t=self.num_moa_clusters,
             criterion="maxclust"
         )
 
@@ -433,7 +444,7 @@ class GseaStep(BaseSystematicStep):
         _, moa_df = self.__summarize_gsea_results(all_rows, moa_rows)
 
         # for skipping above and going straight to clustering
-        # moa_df = pd.read_csv('./gsea-test-cluster/moa_shared_axis_hallmark_gsea.csv')
+        # moa_df = pd.read_csv('./outputs/gsea/moa_shared_axis_hallmark_gsea.csv')
 
         # cluster MOA results
         if not self.skip_moa_shared_axis:

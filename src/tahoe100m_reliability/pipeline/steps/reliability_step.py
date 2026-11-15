@@ -324,13 +324,99 @@ def compute_reliability(
 
 class ReliabilityStep(BaseReliabilityStep):
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        indexed_treatments_file: Path,
+        ctrl_gene_expressions_dir: Path,
+        drug_dosages_csv: Path,
+        normalize_cp10k: bool = False,
+        clusters: str | None = None,
+        target_cell_lines_csv: Path | None = None,
+        stim_data_dir: Path | None = None,
+        cell_line_cooldown: int = 30,
+        skip_localization: bool = False,
+        **kwargs,
+    ) -> None:
         """Initialize reliability step."""
-        super().__init__(args)
-        if self.args.normalize_cp10k:
-            self.delta_p_dir = self.args.output_dir / 'delta_p_cp10k'
+        super().__init__(**kwargs)
+        self.index_treatment_file = indexed_treatments_file
+        self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir
+        self.drug_dosages_csv = drug_dosages_csv
+        self.normalize_cp10k = normalize_cp10k
+        self.clusters = [int(x.strip()) for x in clusters.split(',')] if clusters else None
+        self.target_cell_lines_csv = target_cell_lines_csv
+        self.stim_data_dir = stim_data_dir
+        self.cell_line_cooldown = cell_line_cooldown
+        self.skip_localization = skip_localization
+
+        if self.normalize_cp10k:
+            self.delta_p_dir = self.output_dir / 'delta_p_cp10k'
         else:
-            self.delta_p_dir = self.args.output_dir / 'delta_p_raw'
+            self.delta_p_dir = self.output_dir / 'delta_p_raw'
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "ReliabilityStep":
+        """Create ReliabilityStep from arguments."""
+        return cls(**cls.clean_args(args))
+
+    @classmethod
+    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add CLI args for the reliability step to the given parser."""
+        parser.add_argument(
+            '-i', '--indexed-treatments-file', dest='indexed_treatments_file',
+            required=True, type=Path,
+            help='Path to the indexed treatments file, which indexes each sample '
+                + 'in Tahoe100m to the parquet files that contain cellular data from '
+                + 'that sample.'
+        )
+        parser.add_argument(
+            '-c', '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir',
+            required=True, type=Path,
+            help='Path to the directory containing the control gene matrix for all 50 '
+                + 'cell lines, each an individual parquet file.'
+        )
+        parser.add_argument(
+            '-d', '--drug-dosages-csv', dest='drug_dosages_csv', required=True, type=Path,
+            help='Path to a CSV file listing all the drug x dosage combinations with their cluster index.'
+        )
+        parser.add_argument(
+            '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
+            help='Whether or not to run normalize the gene transcription counts with CP10K'
+        )
+
+        parser.add_argument(
+            '--clusters', dest='clusters', required=False, type=str,
+            help='Comma-deliminated list of specific cluster(s) to compute Δ-reliability index for. '
+                + 'Defaults to all if not provided'
+        )
+
+        parser.add_argument(
+            '--target-cell-lines-csv', dest='target_cell_lines_csv', required=False, type=Path,
+            help='Path to a CSV file listing all cell lines to compute the split half  '
+                + 'Δ-reliability for. If not provdided, will iterate over all cell lines '
+                + 'for a give drug x dosage combination'
+        )
+
+        parser.add_argument(
+            "--stim-data-dir", dest="stim_data_dir", type=Path, required=False,
+            help="If provided, will save downloaded stim data to this directory rather than a temporary one",
+        )
+
+        parser.add_argument(
+            '--remove-genes', dest='remove_genes', type=str,
+            help='Comma-deliminated list of genes (token_id) to remove from reliability calculations'
+        )
+
+        parser.add_argument(
+            '--cell-line-cooldown', dest='cell_line_cooldown', type= int, required=False, default=30,
+            help='Time in seconds to sleep between processing each cell line. Set to 0 to disable.'
+        )
+        parser.add_argument(
+            '--skip-localization', dest='skip_localization', action='store_true',
+            help='Skip localization if data already lives under a passed stim-data-dir'
+        )
+        super().add_cli_args(parser)
+
 
     def __aggregate_stim_data(self, treatments: list[TreatmentSet], stim_dir: Path):
         """Localize and aggregate stim data from the HuggingFace repository."""
@@ -428,14 +514,14 @@ class ReliabilityStep(BaseReliabilityStep):
                 jobs.append((
                     condition,
                     cell_line_dirs,
-                    self.args.seed + num_jobs_total
+                    self.seed + num_jobs_total
                 ))
                 num_jobs_total += 1
 
             cell_line_jobs[cell_line_id] = jobs
 
         num_cell_lines = len(cell_line_jobs)
-        log.info(f"{num_jobs_total} jobs for {num_cell_lines} cell lines queued; will use {self.args.workers} workers")
+        log.info(f"{num_jobs_total} jobs for {num_cell_lines} cell lines queued; will use {self.workers} workers")
         log_memory_usage()
 
         return cell_line_jobs, num_jobs_total
@@ -457,9 +543,9 @@ class ReliabilityStep(BaseReliabilityStep):
 
         # temporary directory for this cluster of treatments
         with tempfile.TemporaryDirectory() as tmp_dir:
-            stim_dir = Path(tmp_dir) if self.args.stim_data_dir is None else self.args.stim_data_dir  # can handle this better
+            stim_dir = Path(tmp_dir) if self.stim_data_dir is None else self.stim_data_dir  # can handle this better
 
-            if not self.args.skip_localization:
+            if not self.skip_localization:
                 self.aggregate_stim_data(treatments, stim_dir)
 
             log.info(f"Computing reliability for each cell line against controls for cluster {cluster}")
@@ -472,11 +558,11 @@ class ReliabilityStep(BaseReliabilityStep):
                 # Load control for this cell line
                 shared_ctrl = load_ctrl_to_shared_memory(
                     cell_line_id,
-                    self.args.ctrl_gene_expressions_dir,
-                    self.args.expr_k,
+                    self.ctrl_gene_expressions_dir,
+                    self.expr_k,
                     remove_genes,
-                    self.args.normalize_cp10k,
-                    workers=self.args.workers
+                    self.normalize_cp10k,
+                    workers=self.workers
                 )
 
                 # not enough controls to evaluate this cell line, drop corresponding conditions
@@ -488,14 +574,14 @@ class ReliabilityStep(BaseReliabilityStep):
                 delta_p_results = []
 
                 # cool off
-                if self.args.cell_line_cooldown > 0:
-                    log.info(f"sleeping {self.args.cell_line_cooldown} seconds to cool off")
-                    time.sleep(self.args.cell_line_cooldown)
+                if self.cell_line_cooldown > 0:
+                    log.info(f"sleeping {self.cell_line_cooldown} seconds to cool off")
+                    time.sleep(self.cell_line_cooldown)
 
                 try:
                     # Execute contexts in parallel
                     with ProcessPoolExecutor(
-                        max_workers=self.args.workers,
+                        max_workers=self.workers,
                         initializer=init_worker_with_ctrl,
                         initargs=(
                             shared_ctrl['shm'].name,
@@ -515,9 +601,9 @@ class ReliabilityStep(BaseReliabilityStep):
                                 cell_line_dirs=cell_line_dirs,
                                 task_seed=task_seed,
                                 n_half_grid=self.n_half_grid,
-                                n_repeats=self.args.n_repeats,
-                                delete_stim_data=self.args.stim_data_dir is None,
-                                normalize_cp10k=self.args.normalize_cp10k
+                                n_repeats=self.n_repeats,
+                                delete_stim_data=self.stim_data_dir is None,
+                                normalize_cp10k=self.normalize_cp10k
                             )
 
                             futures[future] = condition
@@ -551,7 +637,7 @@ class ReliabilityStep(BaseReliabilityStep):
                     # save delta_p results for downstream analysis
                     # needs to be done across entire cell lines so cannot be done here
                     if delta_p_results:
-                        if self.args.normalize_cp10k:
+                        if self.normalize_cp10k:
                             delta_p_filename = f'{cell_line_id}_cp10k_delta_p_cluster{cluster}.npz'
                         else:
                             delta_p_filename = f"{cell_line_id}_delta_p_cluster{cluster}.npz" 
@@ -567,7 +653,7 @@ class ReliabilityStep(BaseReliabilityStep):
                     shared_ctrl['shm'].unlink()
 
         # summarize reliability results
-        if self.args.normalize_cp10k:
+        if self.normalize_cp10k:
             dataset_name = f'{dataset_name}_cp10k'
         else:
             dataset_name = f'{dataset_name}_raw'
@@ -579,7 +665,7 @@ class ReliabilityStep(BaseReliabilityStep):
         )
 
         # write out dropped genes
-        dropped_genes_filepath = self.args.output_dir / f'dropped_genes_histogram_cluster_{cluster}_{self.cur_time}.json'
+        dropped_genes_filepath = self.output_dir / f'dropped_genes_histogram_cluster_{cluster}_{self.cur_time}.json'
         with dropped_genes_filepath.open('w') as fh:
             json.dump(all_dropped_genes, fh, indent=4)
 
@@ -587,7 +673,7 @@ class ReliabilityStep(BaseReliabilityStep):
 
         # write out skipped conditions
         if skipped_conditions:
-            skipped_conditions_filepath = self.args.output_dir / f"skipped_conditions_cluster_{cluster}_{self.cur_time}.json"
+            skipped_conditions_filepath = self.output_dir / f"skipped_conditions_cluster_{cluster}_{self.cur_time}.json"
             with skipped_conditions_filepath.open("w") as fh:
                 json.dump({"skipped_conditions": skipped_conditions}, fh, indent=4)
 
@@ -597,85 +683,27 @@ class ReliabilityStep(BaseReliabilityStep):
         log.info(f"Finished processing cluster {cluster} with {len(treatments)} treatments")
         log_memory_usage()
 
-    @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for the reliability step to the given parser."""
-        parser.add_argument(
-            '-i', '--indexed-treatments-file', dest='indexed_treatments_file',
-            required=True, type=Path,
-            help='Path to the indexed treatments file, which indexes each sample '
-                + 'in Tahoe100m to the parquet files that contain cellular data from '
-                + 'that sample.'
-        )
-        parser.add_argument(
-            '-c', '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir',
-            required=True, type=Path,
-            help='Path to the directory containing the control gene matrix for all 50 '
-                + 'cell lines, each an individual parquet file.'
-        )
-        parser.add_argument(
-            '-d', '--drug-dosages-csv', dest='drug_dosages_csv', required=True, type=Path,
-            help='Path to a CSV file listing all the drug x dosage combinations with their cluster index.'
-        )
-        parser.add_argument(
-            '--normalize-cp10k', dest='normalize_cp10k', action='store_true',
-            help='Whether or not to run normalize the gene transcription counts with CP10K'
-        )
-
-        parser.add_argument(
-            '--clusters', dest='clusters', required=False, type=str,
-            help='Comma-deliminated list of specific cluster(s) to compute Δ-reliability index for. '
-                + 'Defaults to all if not provided'
-        )
-
-        parser.add_argument(
-            '--target-cell-lines-csv', dest='target_cell_lines_csv', required=False, type=Path,
-            help='Path to a CSV file listing all cell lines to compute the split half  '
-                + 'Δ-reliability for. If not provdided, will iterate over all cell lines '
-                + 'for a give drug x dosage combination'
-        )
-
-        parser.add_argument(
-            "--stim-data-dir", dest="stim_data_dir", type=Path, required=False,
-            help="If provided, will save downloaded stim data to this directory rather than a temporary one",
-        )
-
-        parser.add_argument(
-            '--remove-genes', dest='remove_genes', type=str,
-            help='Comma-deliminated list of genes (token_id) to remove from reliability calculations'
-        )
-
-        parser.add_argument(
-            '--cell-line-cooldown', dest='cell_line_cooldown', type= int, required=False, default=30,
-            help='Time in seconds to sleep between processing each cell line. Set to 0 to disable.'
-        )
-        parser.add_argument(
-            '--skip-localization', dest='skip_localization', action='store_true',
-            help='Skip localization if data already lives under a passed stim-data-dir'
-        )
-        super().add_cli_args(parser)
-
     def run(self) -> None:
         """Run the full pipeline."""
-        remove_genes = set([x.strip() for x in self.args.remove_genes.split(',')]) \
-            if self.args.remove_genes else None
+        remove_genes = set([x.strip() for x in self.remove_genes.split(',')]) \
+            if self.remove_genes else None
 
         # Build target treatment list
         clustered_treatments = TreatmentSet.load_clusters_from_file(
-            treatments_file=self.args.indexed_treatments_file,
-            drug_dosages=self.args.drug_dosages_csv,
-            target_clusters=[int(x.strip()) for x in self.args.clusters.split(',')] if self.args.clusters else None
+            treatments_file=self.indexed_treatments_file,
+            drug_dosages=self.drug_dosages_csv,
+            target_clusters=self.clusters
         )
 
         target_cell_lines = []
-        if self.args.target_cell_lines_csv:
-            with self.args.target_cell_lines_csv.open('r') as fh:
+        if self.target_cell_lines_csv:
+            with self.target_cell_lines_csv.open('r') as fh:
                 reader = csv.DictReader(fh)
                 target_cell_lines = set(row['cell_line_id'] for row in reader)
         else:
 
             # get all possible cell lines from available controls
-            for file in self.args.ctrl_gene_expressions_dir.glob('*.parquet'):
+            for file in self.ctrl_gene_expressions_dir.glob('*.parquet'):
                 target_cell_lines.append(file.stem.replace('_gene_expressions', ''))
 
         log.info(f"Targeting {len(target_cell_lines)} cell lines")

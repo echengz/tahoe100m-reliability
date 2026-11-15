@@ -37,15 +37,28 @@ log = logging.getLogger(__name__)
 
 class FiguresStep(PipelineStep):
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        output_dir: Path | None = None,
+        preprocess_dir: Path | None = None,
+        reliability_raw_dir: Path | None = None,
+        reliability_cp10k_dir: Path | None = None,
+        systematic_dir: Path | None = None,
+        gsea_dir: Path | None = None,
+    ) -> None:
         """Initialize the step."""
-        self.__output_dir = args.output_dir
+        self.__output_dir = output_dir
 
-        self.__preprocess_dir = args.preprocess_dir
-        self.__reliability_raw_dir = args.reliability_raw_dir
-        self.__reliability_cp10k_dir = args.reliability_cp10k_dir
-        self.__systema_dir = args.systema_dir
-        self.__gsea_dir = args.gsea_dir
+        self.__preprocess_dir = preprocess_dir
+        self.__reliability_raw_dir = reliability_raw_dir
+        self.__reliability_cp10k_dir = reliability_cp10k_dir
+        self.__systematic_dir = systematic_dir
+        self.__gsea_dir = gsea_dir
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "FiguresStep":
+        """Create FiguresStep from arguments."""
+        return cls(**cls.clean_args(args))
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -65,15 +78,15 @@ class FiguresStep(PipelineStep):
             help="Path to the preprocess resuls; should contain combined_index_treatment_sets.json"
         )
         parser.add_argument(
-            '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
-            help="Path to the normalized (CP10K) reliability resuls"
-        )
-        parser.add_argument(
             '--reliability-raw-dir', dest='reliability_raw_dir', type=Path,
             help="Path to the reliability resuls"
         )
         parser.add_argument(
-            '--systema-dir', dest='systema_dir', type=Path,
+            '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
+            help="Path to the normalized (CP10K) reliability resuls"
+        )
+        parser.add_argument(
+            '--systematic-dir', dest='systematic_dir', type=Path,
             help='Path to the systematic results (assumes both raw and cp10k are in there)'
         )
         parser.add_argument(
@@ -118,7 +131,7 @@ class FiguresStep(PipelineStep):
 
     def __generate_systematic_figures(self):
         # Generate systematic figures
-        if not self.__systema_dir:
+        if not self.__systematic_dir:
             return
 
         systema_output_dir = self.__output_dir / 'systema'
@@ -126,19 +139,19 @@ class FiguresStep(PipelineStep):
 
         for mode in ['raw', 'cp10k']:
             log.info(f"Generating {mode} systema figures...")
-            figures = SystematicFigures(self.__systema_dir, systema_output_dir, mode)
+            figures = SystematicFigures(self.__systematic_dir, systema_output_dir, mode)
             figures.generate_figures()
 
         # combined results
-        combined_figures = CombinedSystematicFigures(self.__systema_dir, systema_output_dir)
+        combined_figures = CombinedSystematicFigures(self.__systematic_dir, systema_output_dir)
         combined_figures.generate_figures()
 
     def __merge_influence_with_gsea(self, df: pd.DataFrame, mode: str) -> pd.DataFrame:
         """Merge influence with GSEA results, if influence results exist."""
-        if not self.__systema_dir:
+        if not self.__systematic_dir:
             return df, False
 
-        influence_dir = self.__systema_dir / 'gsea_influences'
+        influence_dir = self.__systematic_dir / 'gsea_influences'
         influence_df = pd.DataFrame()
 
         if influence_dir.is_dir():

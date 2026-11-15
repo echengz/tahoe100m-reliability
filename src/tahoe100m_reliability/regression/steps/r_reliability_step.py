@@ -59,6 +59,22 @@ def compute_split_half_reliability_wrapper(args):
 
 class RegressionReliabilityStep(BaseReliabilityStep):
 
+    def __init__(
+        self,
+        input_dir: Path,
+        baseline_dir: Path,
+        **kwargs,
+    ) -> None:
+        """Initialize reliability step."""
+        super().__init__(**kwargs)
+        self.input_dir = input_dir
+        self.baseline_dir = baseline_dir
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "RegressionReliabilityStep":
+        """Create RegressionReliabilityStep from arguments."""
+        return cls(**cls.clean_args(args))
+
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         """Add CLI args for the regression reliability step to the given parser."""
@@ -182,7 +198,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
             # (Ahlmann-Eltze et al. 2025 approach: rank by expression, not effect size)
             # Computed ONCE per context from control cells → non-circular
             ctrl_mean_expr = ctrl_dense.mean(axis=0)
-            expr_k = min(self.args.expr_k, ctrl_dense.shape[1])
+            expr_k = min(self.expr_k, ctrl_dense.shape[1])
             expr_idx = np.argpartition(ctrl_mean_expr, -expr_k)[-expr_k:]
             expr_idx = expr_idx[np.argsort(ctrl_mean_expr[expr_idx])[::-1]]
 
@@ -221,7 +237,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
                 ]
 
                 cond_name = f"{ctx}|{stim_cond}"
-                task_seed = self.args.seed + i
+                task_seed = self.seed + i
 
                 # Extract dense stim submatrix HERE in parent (avoids sending
                 # full X_norm to workers — critical for macOS spawn)
@@ -242,9 +258,9 @@ class RegressionReliabilityStep(BaseReliabilityStep):
                     n_stim,
                     n_half_max,
                     n_half_fixed_feasible,
-                    self.args.n_repeats,
+                    self.n_repeats,
                     task_seed,
-                    self.args.output_dir
+                    self.output_dir
                 ))
 
             if not tasks:
@@ -254,7 +270,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
                 continue
 
             # ---- Step 5: Compute ----
-            n_workers = min(self.args.workers, len(tasks))
+            n_workers = min(self.workers, len(tasks))
             if n_workers <= 1:
                 ctx_rows = []
                 for i, task in enumerate(tasks):
@@ -333,8 +349,8 @@ class RegressionReliabilityStep(BaseReliabilityStep):
         """Compare baseline results."""
 
         # get baseline (original) results
-        baseline_df_long = pd.read_csv(self.args.baseline_dir / f'reliability_cc_{ds_name}.csv')
-        baseline_df_summary = pd.read_csv(self.args.baseline_dir / f'reliability_cc_summary_{ds_name}.csv')
+        baseline_df_long = pd.read_csv(self.baseline_dir / f'reliability_cc_{ds_name}.csv')
+        baseline_df_summary = pd.read_csv(self.baseline_dir / f'reliability_cc_summary_{ds_name}.csv')
 
         # remove dataset/cluster columns, meaning different between two versions
         df_long = df_long.drop(columns=['cluster'])
@@ -396,7 +412,7 @@ class RegressionReliabilityStep(BaseReliabilityStep):
         all_results = {}
 
         for ds_name in datasets_to_run:
-            h5ad_path = self.args.input_dir / f"{ds_name}.h5ad"
+            h5ad_path = self.input_dir / f"{ds_name}.h5ad"
 
             if not h5ad_path.exists():
                 log.info(f"\n  ✗ SKIPPING {ds_name}: not found at {h5ad_path}")

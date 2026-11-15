@@ -28,12 +28,44 @@ log.addHandler(handler)
 
 class PreprocessStep(PipelineStep):
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        treatment_sets_dir: Path,
+        parquet_shard_start: int = 0,
+        control_gene_expressions_dir: Path | None = None,
+    ) -> None:
         """Initialize the preprocess step."""
-        self.treatment_sets_dir = args.treatment_sets_dir
-        self.parquet_shard_start = args.parquet_shard_start
+        super().__init__()
 
-        self.control_gene_expressions_dir  = args.control_gene_expressions_dir
+        self.treatment_sets_dir = treatment_sets_dir
+        self.parquet_shard_start = parquet_shard_start
+        self.control_gene_expressions_dir = control_gene_expressions_dir
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "PreprocessStep":
+        """Create PreprocessStep from arguments."""
+        return cls(**cls.clean_args(args))
+
+    @classmethod
+    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add CLI args for the preprocess step to the given parser."""
+        parser.add_argument(
+            '--treatment-sets-dir', dest='treatment_sets_dir',
+            type=Path, required=True,
+            help='Path to the indexed treatment sets directory. Will read and write results here.'
+        )
+
+        parser.add_argument(
+            '--parquet-shard-start', dest='parquet_shard_start',
+            type=int, default=0,
+            help='Which parquet shard to start indexing treatments at; for if the process gets interrupted'
+        )
+
+        parser.add_argument(
+            '--control-gene-expressions-dir', dest='control_gene_expressions_dir',
+            type=Path, default=None,
+            help='If provided, will build the control gene expression matrices and write to this directory'
+        )
 
     def get_treatment_sets(self) -> list[TreatmentSet]:
         """Get all known drug x dosage (perturbation) permutations (treatment sets)."""
@@ -255,33 +287,6 @@ class PreprocessStep(PipelineStep):
 
         log.info("Successfully generated all control gene expression matrices")
 
-    @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        """Add CLI args for the preprocess step to the given parser."""
-        parser.add_argument(
-            '--treatment-sets-dir', dest='treatment_sets_dir',
-            type=Path, required=True,
-            help='Path to the indexed treatment sets directory. Will read and write results here.'
-        )
-
-        parser.add_argument(
-            '--parquet-shard-start', dest='parquet_shard_start',
-            type=int, default=0,
-            help='Which parquet shard to start indexing treatments at; for if the process gets interrupted'
-        )
-
-        parser.add_argument(
-            '--chunk-size', dest='chunk_size',
-            type=int, default=10_000,
-            help='Chunk size to process dataset with'
-        )
-
-        parser.add_argument(
-            '--control-gene-expressions-dir', dest='control_gene_expressions_dir',
-            type=Path, default=None,
-            help='If provided, will build the control gene expression matrices and write to this directory'
-        )
-
     def run(self) -> None:
         """Run the preprocess step."""
         treatment_sets_file = self.treatment_sets_dir / 'combined_indexed_treatment_sets.json'
@@ -294,8 +299,8 @@ class PreprocessStep(PipelineStep):
             # 2. Index treatment sets to parquets
             self.index_treatment_sets(
                 treatment_sets,
-                args.treatment_sets_dir,
-                args.parquet_shard_start,
+                treatment_sets_dir,
+                parquet_shard_start,
             )
 
             # 2.1 combine parts
@@ -304,7 +309,7 @@ class PreprocessStep(PipelineStep):
         else:
             # load from existing file
             treatment_sets = TreatmentSet.load_list_from_file(
-                treatments_file=args.treatment_sets_file
+                treatments_file=treatment_sets_file
             )
 
         # 3. Evaluate treatment sets to ensure they are valid

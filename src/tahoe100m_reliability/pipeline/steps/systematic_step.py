@@ -40,7 +40,12 @@ log = logging.getLogger(__name__)
 
 class SystematicStep(BaseSystematicStep):
 
-    def __init__(self, args: argparse.Namespace, name: str, datasets: list[str]) -> None:
+    def __init__(
+        self,
+        name: str,
+        datasets: list[str],
+        **kwargs,
+    ) -> None:
         """Initializer.
 
         Arguments:
@@ -48,9 +53,14 @@ class SystematicStep(BaseSystematicStep):
             name: name for the group of data being evaluated
             datasets: the datasets being evaluated
         """
-        super().__init__(args=args)
+        super().__init__(**kwargs)
         self.name = name
         self.datasets = datasets
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "SystematicStep":
+        """Create SystematicStep from arguments."""
+        return cls(**cls.clean_args(args))
 
     def post_process_perturbation_score(
         self,
@@ -435,19 +445,29 @@ class SystematicStep(BaseSystematicStep):
 class SystematicInfluenceStep(SystematicStep):
     """Evaluate systematic and influence scores."""
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        gsea_global_shared_axis_hallmark: Path | None = None,
+        gsea_moa_shared_axis_hallmark: Path | None = None,
+        **kwargs,
+    ) -> None:
         """Initializer."""
-        super().__init__(args=args, name='tahoe100m', datasets=['tahoe100m'])
+        super().__init__(name='tahoe100m', datasets=['tahoe100m'], **kwargs)
 
         self.drug_to_moa = self.load_drug_moa_mapping()
 
         self.influence_accumulator = InfluenceAccumulatorHandler(
-            args.gsea_global_shared_axis_hallmark,
-            args.gsea_moa_shared_axis_hallmark,
+            gsea_global_shared_axis_hallmark,
+            gsea_moa_shared_axis_hallmark,
             self.gene_metadata,
             self.output_dir,
             self.cur_time,
         )
+
+    @classmethod
+    def create_from_args(cls, args: argparse.Namespace) -> "SystematicInfluenceStep":
+        """Create SystematicInfluenceStep from arguments."""
+        return cls(**cls.clean_args(args))
 
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:

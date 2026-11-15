@@ -58,19 +58,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ReliabilityStep.add_cli_args(reliability_parser)
 
-    # SYSTEMATIC STEP
-    systematic_parser = subparsers.add_parser(
-        'systematic',
-        help='Runs the systematic step of the pipeline'
-    )
-    SystematicInfluenceStep.add_cli_args(systematic_parser)
-
     # GSEA STEP
     gsea_parser = subparsers.add_parser(
         'gsea',
         help='Runs the GSEA step of the pipeline'
     )
     GseaStep.add_cli_args(gsea_parser)
+
+    # SYSTEMATIC STEP
+    systematic_parser = subparsers.add_parser(
+        'systematic',
+        help='Runs the systematic step of the pipeline'
+    )
+    SystematicInfluenceStep.add_cli_args(systematic_parser)
 
     # FIGURES STEP
     figures_parser = subparsers.add_parser(
@@ -124,7 +124,7 @@ def main() -> None:
     if not runner:
         raise ValueError(f'Unrecognized command: {args.command}')
 
-    runner(args).run()
+    runner.create_from_args(args).run()
 
 
 if __name__ == "__main__":
