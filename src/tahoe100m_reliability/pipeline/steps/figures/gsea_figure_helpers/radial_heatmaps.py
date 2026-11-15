@@ -633,15 +633,8 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             fontsize=7,
         )
 
-        # ----------------------------------------------------
-        # SAVE
-        # ----------------------------------------------------
-
-        output_path = (
-            self.output_dir
-            / f"{filename_prefix}_{mode}_moa_circos.png"
-        )
-
+        # Save results
+        output_path = self.output_dir / f"{filename_prefix}_{mode}_moa_circos.png"
         fig.savefig(
             output_path,
             dpi=300,

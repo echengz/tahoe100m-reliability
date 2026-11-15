@@ -252,7 +252,7 @@ class SystematicFigures(BaseSystematicFigures):
                 bbox_inches="tight",
             )
 
-    def plot_top_influential_genes(self, top_n: int = 15):
+    def plot_top_influential_genes(self, top_n: int = 10):
         """
         Plot three vertically stacked categorical scatter plots comparing
         group-specific gene influence against global influence.
@@ -309,8 +309,8 @@ class SystematicFigures(BaseSystematicFigures):
             fig, axes = plt.subplots(
                 nrows=3,
                 ncols=1,
-                figsize=(max(10, len(categories) * 0.7), 18),
-                sharex=True
+                figsize=(max(10, len(categories) * 0.3), 15),
+                sharex=True,
             )
 
             for ax, influence_col in zip(axes, influence_cols):
@@ -350,7 +350,7 @@ class SystematicFigures(BaseSystematicFigures):
                     hue='group_id',
                     hue_order=top_genes,
                     palette=palette,
-                    jitter=0.2,
+                    jitter=0.1,
                     dodge=False,
                     alpha=0.85,
                     size=7,
@@ -358,35 +358,44 @@ class SystematicFigures(BaseSystematicFigures):
                     legend=False
                 )
 
-                # Label the most influential genes in each category
-                n_labels = 1
+                ax.axhline(
+                    y=0,
+                    color='black',
+                    linestyle='-',
+                    linewidth=1,
+                    alpha=0.9,
+                    zorder=0
+                )
 
-                for category in categories:
-                    category_df = plot_df[
-                        plot_df['group'] == category
-                    ].copy()
+                # # Label the most influential genes in each category
+                # n_labels = 1
 
-                    category_df['abs_influence'] = (
-                        category_df[influence_col].abs()
-                    )
+                # for category in categories:
+                #     category_df = plot_df[
+                #         plot_df['group'] == category
+                #     ].copy()
 
-                    top_labels = category_df.nlargest(
-                        n_labels, 'abs_influence'
-                    )
+                #     category_df['abs_influence'] = (
+                #         category_df[influence_col].abs()
+                #     )
 
-                    for _, row in top_labels.iterrows():
-                        x_pos = categories.index(category)
+                #     top_labels = category_df.nlargest(
+                #         n_labels, 'abs_influence'
+                #     )
 
-                        ax.annotate(
-                            row['group_id'],
-                            xy=(x_pos, row[influence_col]),
-                            xytext=(5, 5),
-                            textcoords='offset points',
-                            fontsize=7,
-                            alpha=0.9,
-                            ha='left',
-                            va='bottom'
-                        )
+                #     for _, row in top_labels.iterrows():
+                #         x_pos = categories.index(category)
+
+                #         ax.annotate(
+                #             row['group_id'],
+                #             xy=(x_pos, row[influence_col]),
+                #             xytext=(5, 5),
+                #             textcoords='offset points',
+                #             fontsize=7,
+                #             alpha=0.9,
+                #             ha='left',
+                #             va='bottom'
+                #         )
 
                 ax.set_title(influence_col.replace('_', ' ').title())
                 ax.set_ylabel('Influence')
@@ -416,7 +425,7 @@ class SystematicFigures(BaseSystematicFigures):
                 title='Gene',
                 bbox_to_anchor=(1.01, 0.95),
                 loc='upper left',
-                frameon=False
+                frameon=True
             )
 
             fig.suptitle(
@@ -427,7 +436,6 @@ class SystematicFigures(BaseSystematicFigures):
 
             sns.despine()
             plt.tight_layout()
-
             plt.savefig(
                 self.output_dir /
                 f"systema_{self.mode}_influence_by_{group}.png",
@@ -435,7 +443,77 @@ class SystematicFigures(BaseSystematicFigures):
                 bbox_inches='tight'
             )
 
-            plt.close(fig)
+            # Separate mean influence plot
+            influence_col = 'mean_influence'
+
+            fig, ax = plt.subplots(figsize=(14, 5))
+
+            group_plot_df = df[
+                ['group_id', group, influence_col]
+            ].dropna().copy()
+
+            group_plot_df = group_plot_df.rename(
+                columns={group: 'group'}
+            )
+
+            global_plot_df = top_genes_df[
+                ['group_id', influence_col]
+            ].copy()
+            global_plot_df['group'] = 'Global'
+
+            plot_df = pd.concat(
+                [group_plot_df, global_plot_df],
+                ignore_index=True
+            )
+
+            plot_df['group'] = pd.Categorical(
+                plot_df['group'].astype(str),
+                categories=categories,
+                ordered=True
+            )
+
+            sns.stripplot(
+                data=plot_df,
+                x='group',
+                y=influence_col,
+                hue='group_id',
+                hue_order=top_genes,
+                palette=palette,
+                jitter=0.1,
+                dodge=False,
+                alpha=0.7,
+                size=5,
+                ax=ax
+            )
+
+            ax.axhline(
+                y=0,
+                color='black',
+                linestyle='-',
+                linewidth=1,
+                alpha=0.9,
+                zorder=0
+            )
+
+            ax.set_title(f'Mean Influence ({self.mode})')
+            ax.set_ylabel('Mean Influence')
+            ax.set_xlabel('')
+            ax.grid(axis='y', alpha=0.3)
+            ax.tick_params(axis='x', labelrotation=90, labelsize=8)
+
+            ax.legend(
+                title='Gene',
+                bbox_to_anchor=(1.01, 1),
+                loc='upper left',
+                frameon=True
+            )
+
+            fig.tight_layout()
+            plt.savefig(
+                self.output_dir / f"systema_{self.mode}_mean_influence_by_{group}.png",
+                dpi=300,
+                bbox_inches='tight'
+            )
 
     def generate_figures(self) -> None:
         # Systematic results

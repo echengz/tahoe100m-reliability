@@ -135,7 +135,7 @@ class PreprocessFigures:
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_dosage_per_parquet.png')
 
-    def __generate_perturbation_heatmaps(self) -> None:
+    def __generate_perturbation_heatmaps(self, figsize=(9, 9)) -> None:
         """3. Generate heatmaps of the perturbation spread."""
         rows = []
         for treatment in self.__treatment_sets:
@@ -169,7 +169,7 @@ class PreprocessFigures:
         df = df.iloc[order].reset_index(drop=True)
 
         # plot
-        fig, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=figsize)
 
         ax.imshow(
             matrix,
@@ -205,6 +205,8 @@ class PreprocessFigures:
 
         # color code the heatmap
         cluster_matrix = np.zeros_like(matrix, dtype=np.int16)
+        n_clusters = len(df['cluster'].unique())
+        assert n_clusters == 13
 
         for i in range(len(df)):
             cluster_matrix[i, matrix[i] == 1] = df.iloc[i]["cluster"]
@@ -212,7 +214,7 @@ class PreprocessFigures:
         colors = ["grey"] + list(plt.cm.turbo(np.linspace(0, 1, n_clusters)))
         cmap = ListedColormap(colors)
 
-        fig, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=figsize)
 
         ax.imshow(
             cluster_matrix,
@@ -248,6 +250,7 @@ class PreprocessFigures:
             fontsize=8.5,
             title_fontsize=10,
             framealpha=0.8,
+            bbox_to_anchor=(0.02, 0.02)
         )
 
         ax.set_xlabel("Parquet shard")
@@ -285,7 +288,7 @@ class PreprocessFigures:
             Patch(facecolor="blue", label="5.00 uM"),
         ]
 
-        fig, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=figsize)
 
         ax.imshow(
             dosage_matrix,
@@ -309,7 +312,7 @@ class PreprocessFigures:
         plt.savefig(self.__output_dir / 'dosage_distribution.png')
 
         # color heatmap by drug
-        fig, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=figsize)
         # Drug order as they appear in the current matrix / df
         drugs_in_order = df["drug"].drop_duplicates().tolist()
 

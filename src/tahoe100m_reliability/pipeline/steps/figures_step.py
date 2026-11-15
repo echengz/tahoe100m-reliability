@@ -108,7 +108,7 @@ class FiguresStep(PipelineStep):
         preprocess_output_dir = self.__output_dir / 'preprocess'
         preprocess_output_dir.mkdir(parents=True, exist_ok=True)
 
-        clustered_treatments_csv = self.__preprocess_dir / 'clustered_treatments.json'
+        clustered_treatments_csv = self.__preprocess_dir / 'clustered_treatments.csv'
         figures = PreprocessFigures(
             treatment_sets, clustered_treatments_csv, preprocess_output_dir
         )
@@ -137,7 +137,7 @@ class FiguresStep(PipelineStep):
         if not self.__systematic_dir:
             return
 
-        systema_output_dir = self.__output_dir / 'systema'
+        systema_output_dir = self.__output_dir / 'systematic'
         systema_output_dir.mkdir(parents=True, exist_ok=True)
 
         for mode in ['raw', 'cp10k']:

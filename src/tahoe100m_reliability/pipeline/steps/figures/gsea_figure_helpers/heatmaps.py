@@ -404,14 +404,7 @@ class GSEAIndividualHeatmaps(GSEAHeatmaps):
     def plot_heatmaps(
         self, gsea_df: pd.DataFrame, filename_prefix: str, title_postfix: str,
     ) -> None:
-        """Plot GSEA results.
-
-        Assumes as input the DF generated from the GSEA step, saved as
-        `{axis}_shared_axis_hallmark_gsea.csv`
-
-        If influence DF is provided, also plots corresponding mean influence
-        scores of the leading genes.
-        """
+        """Plot GSEA heatmaps."""
         # prepare matrices
         nes_matrices = self.__prepare_nes_matrices(gsea_df)
 
@@ -430,9 +423,7 @@ class GSEAIndividualHeatmaps(GSEAHeatmaps):
         ).dropna()
 
         if all_nes.empty:
-            raise ValueError(
-                "No finite NES values are available to plot."
-            )
+            raise ValueError("No finite NES values are available to plot.")
 
         vmax = float(np.abs(all_nes).max())
         vmax = max(vmax, 1e-6)
@@ -450,4 +441,3 @@ class GSEAIndividualHeatmaps(GSEAHeatmaps):
                 output_path=output_path,
                 vmax=vmax,
             )
-

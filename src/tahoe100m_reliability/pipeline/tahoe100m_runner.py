@@ -72,7 +72,7 @@ class Tahoe100mPipelineRunner(PipelineStep):
             'normalize_cp10k': False,
             'indexed_treatments_file': preprocess_dir / 'combined_indexed_treatment_sets.json',
             'ctrl_gene_expressions_dir': ctrl_gene_expressions_dir,
-            'clustered_treatments_csv': preprocess_dir / 'clustered_treatments.json',
+            'clustered_treatments_csv': preprocess_dir / 'clustered_treatments.csv',
         }
 
         reliability_cp10k_dir = output_dir / 'reliability_raw'
@@ -81,7 +81,7 @@ class Tahoe100mPipelineRunner(PipelineStep):
             'normalize_cp10k': True,
             'indexed_treatments_file': preprocess_dir / 'combined_indexed_treatment_sets.json',
             'ctrl_gene_expressions_dir': ctrl_gene_expressions_dir,
-            'clustered_treatments_csv': preprocess_dir / 'clustered_treatments.json',
+            'clustered_treatments_csv': preprocess_dir / 'clustered_treatments.csv',
         }
 
         gsea_dir = output_dir / 'gsea'
