@@ -97,20 +97,6 @@ CELLULAR_DATASETS = {
 }
 
 
-# Common alternative names to try during auto-discovery
-CONTEXT_COL_CANDIDATES = [
-    "cell_type", "celltype", "cell_line", "cellLine", "cell_line_id",
-    "patient", "donor", "species", "sample", "batch",
-    "outSample", "outsample",
-]
-
-
-CONDITION_COL_CANDIDATES = [
-    "condition", "perturbation", "treatment", "stim", "stimulation",
-    "drug", "compound", "perturb",
-]
-
-
 CTRL_LABEL_CANDIDATES = [
     "control", "Control", "ctrl", "CTRL",
     "DMSO", "dmso", "Vehicle", "vehicle",
