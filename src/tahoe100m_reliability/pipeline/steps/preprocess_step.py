@@ -36,14 +36,14 @@ class PreprocessStep(PipelineStep):
         output_dir: Path,
         treatment_sets_dir: Path,
         parquet_shard_start: int = 0,
-        control_gene_expressions_dir: Path | None = None,
+        ctrl_gene_expressions_dir: Path | None = None,
     ) -> None:
         """Initialize the preprocess step."""
         super().__init__()
         self.output_dir = output_dir
         self.treatment_sets_dir = treatment_sets_dir
         self.parquet_shard_start = parquet_shard_start
-        self.control_gene_expressions_dir = control_gene_expressions_dir
+        self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir
 
     @classmethod
     def create_from_args(cls, args: argparse.Namespace) -> "PreprocessStep":
@@ -72,7 +72,7 @@ class PreprocessStep(PipelineStep):
         )
 
         parser.add_argument(
-            '--control-gene-expressions-dir', dest='control_gene_expressions_dir',
+            '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir',
             type=Path, default=None,
             help='If provided, will build the control gene expression matrices and write to this directory'
         )
@@ -309,7 +309,7 @@ class PreprocessStep(PipelineStep):
 
             # add new cells to matrix
             for cell_line_id, cells in new_cells.items():
-                filepath = self.control_gene_expressions_dir / f'{cell_line_id}_gene_expressions.parquet'
+                filepath = self.ctrl_gene_expressions_dir / f'{cell_line_id}_gene_expressions.parquet'
 
                 matrix = pd.concat(cells, axis=1).T
 
@@ -341,7 +341,7 @@ class PreprocessStep(PipelineStep):
 
     def run(self) -> None:
         """Run the preprocess step."""
-        treatment_sets_file = self.treatment_sets_dir / 'combined_indexed_treatment_sets.json'
+        treatment_sets_file = self.output_dir / 'combined_indexed_treatment_sets.json'
 
         if not treatment_sets_file.is_file():
             # generate the treatment sets file
@@ -371,5 +371,5 @@ class PreprocessStep(PipelineStep):
         self.cluster_treatments(treatment_sets)
 
         # 5. Generate control gene expression matrices
-        if self.control_gene_expressions_dir:
+        if self.ctrl_gene_expressions_dir:
             self.build_control_gene_expressions(treatment_sets)

@@ -8,6 +8,7 @@ Done as part of a short lab rotation project for the ETH CBB Masters (Fall 2026)
 
 * [Getting Started](#getting-started)
 * [Running the Pipeline](#running-the-pipeline)
+    * [Preprocessed Data](#preprocessed-data)
 * [Source Code Overview](#source-code-overview)
 
 ## Getting Started
@@ -49,6 +50,35 @@ positional arguments:
 ```
 
 Please note that the `preprocess` or `reliability` steps have high memory requirements, and should be run on a machine with sufficient RAM and disk space as they directly deal with the magnitude of the Tahoe-100M dataset.
+
+### Preprocessed Data
+
+To jump-start running the pipeline from the beginning, we have provided the indexed treatments file under `data/preprocess/combined_indexed_treatment_sets.json`. This must live in the output directory passed to the `preprocess` step so that it will pick it up directly.
+
+For example, if running just the `preprocess` step, whatever you pass to `--output-dir` must have `combined_indexed_treatment_sets.json` living under it:
+
+```bash
+uv run tahoe100m-reliability preprocess \
+    --output-dir data/preprocess \
+    --ctrl-gene-expressions-dir data/ctrl_gene_expressions_dir
+```
+
+Similarly, if running the full pipeline `all`, whatever you pass to `--output-dir` must have `preprocess/combined_indexed_treatment_sets.json` living under it:
+
+```bash
+uv run tahoe100m-reliability all \
+    --output-dir data \
+    --ctrl-gene-expressions-dir data/ctrl_gene_expressions_dir
+```
+
+Once the control gene expression matrices have also been generated, you can further skip the `preprocess` step entirely for the full pipeline:
+
+```bash
+uv run tahoe100m-reliability all \
+    --output-dir data \
+    --ctrl-gene-expressions-dir data/ctrl_gene_expressions_dir \
+    --skip-preprocess
+```
 
 ## Source Code Overview
 

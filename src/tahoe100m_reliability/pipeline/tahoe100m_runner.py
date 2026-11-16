@@ -34,9 +34,11 @@ class Tahoe100mPipelineRunner(PipelineStep):
         gsea_args: dict,
         systematic_args: dict,
         figures_args: dict,
+        skip_preprocess: bool = False,
     ) -> None:
         super().__init__()
         self.__output_dir = output_dir
+        self.__skip_preprocess = skip_preprocess
 
         self.__preprocess_args = preprocess_args
         self.__reliability_raw_args = reliability_raw_args
@@ -57,13 +59,13 @@ class Tahoe100mPipelineRunner(PipelineStep):
 
         # shared args
         output_dir = args_dict['output_dir']
-        ctrl_gene_expressions_dir = args_dict['control_gene_expressions_dir']
+        ctrl_gene_expressions_dir = args_dict['ctrl_gene_expressions_dir']
 
         preprocess_dir = output_dir / 'preprocess'
         preprocess_args = {
             'output_dir': preprocess_dir,
             'treatment_sets_dir': preprocess_dir / 'indexed_treatments',
-            'control_gene_expressions_dir': ctrl_gene_expressions_dir,
+            'ctrl_gene_expressions_dir': ctrl_gene_expressions_dir,
         }
 
         reliability_raw_dir = output_dir / 'reliability_raw'
@@ -119,6 +121,7 @@ class Tahoe100mPipelineRunner(PipelineStep):
             gsea_args=gsea_args,
             systematic_args=systematic_args,
             figures_args=figures_args,
+            skip_preprocess=args_dict['skip_preprocess'],
         )
 
     @classmethod
@@ -134,15 +137,23 @@ class Tahoe100mPipelineRunner(PipelineStep):
         )
 
         parser.add_argument(
-            '--control-gene-expressions-dir', dest='control_gene_expressions_dir',
+            '--ctrl-gene-expressions-dir', dest='ctrl_gene_expressions_dir',
             type=Path, required=True,
             help='Path to the control gene expressions directory'
         )
 
+        parser.add_argument(
+            '--skip-preprocess', dest='skip_preprocess', action='store_true',
+            help='If preprocessing has already been done, set this flag to skip preprocessing '
+        )
+
     def run(self) -> None:
         """Run the full pipeline."""
-        log.info("RUNNING PREPROCESS STEP")
-        PreprocessStep(**self.__preprocess_args).run()
+        if not self.__skip_preprocess:
+            log.info("RUNNING PREPROCESS STEP")
+            PreprocessStep(**self.__preprocess_args).run()
+        else:
+            log.info('skip_preprocess set to True, skipping preprocess step')
 
         log.info("RUNNING RELIABILITY RAW STEP")
         reliability_raw_dir = self.output_dir / 'reliability_raw'
