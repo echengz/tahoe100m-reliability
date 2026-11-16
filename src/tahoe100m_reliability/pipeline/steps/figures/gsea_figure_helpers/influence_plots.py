@@ -117,7 +117,7 @@ class GSEAInfluenceFigures:
 
             rho, pval = term_correlations[term]
             ax.set_title(
-                f"{term}\nρ = {rho:.2f}, p = {pval:.2e}",
+                f"{term}\n$r_s = {rho:.2f},\\ p = {pval:.2e}$",
                 fontsize=8,
             )
 

@@ -21,7 +21,7 @@ class PipelineStep:
 
     @classmethod
     def clean_args(cls, args: argparse.Namespace) -> dict:
-        """Return cleaned args as a dict."""
+        """Return cleaned args as a dict; need to drop command."""
         args_dict = vars(args)
         args_dict.pop('command')
 

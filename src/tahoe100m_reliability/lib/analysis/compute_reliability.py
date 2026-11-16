@@ -1,5 +1,7 @@
 """
 Functions to support computing reliability metrics.
+
+Most of this is derived from the original framework.
 """
 import logging
 import numpy as np
@@ -48,10 +50,6 @@ def cp10k_normalization(counts):
     return np.log1p(counts * scale)
 
 
-# ============================================================
-# PEARSON SPLIT-WISE RELIABILITY
-# ============================================================
-
 def batch_pearsonr(X, Y):
     """
     Row-wise Pearson correlation between corresponding rows of X and Y.
@@ -99,7 +97,6 @@ def compute_split_half_reliability(
     n_half_grid_feasible,
     n_repeats,
     task_seed,
-    use_old_sampling: bool = False  # for regression testing
 ) -> list[dict[str, Any]]:
     """
     Compute pearson split-half reliability for one (context, perturbation) condition.
@@ -141,23 +138,13 @@ def compute_split_half_reliability(
             deltas_2 = np.empty((n_repeats, n_genes), dtype=np.float32)
 
             for r in range(n_repeats):
-                # for regression testing, want to use the old sampling method
-                if use_old_sampling:
-                    perm_stim = rng.permutation(n_stim)
-                    half_A = perm_stim[:n]
-                    half_B = perm_stim[n:2 * n]
+                perm_stim = rng.choice(n_stim, size=2 * n, replace=False)
+                half_A = perm_stim[:n]
+                half_B = perm_stim[n:]
 
-                    perm_ctrl = rng.permutation(n_ctrl)
-                    half_C = perm_ctrl[:n]
-                    half_D = perm_ctrl[n:2 * n]
-                else:
-                    perm_stim = rng.choice(n_stim, size=2 * n, replace=False)
-                    half_A = perm_stim[:n]
-                    half_B = perm_stim[n:]
-
-                    perm_ctrl = rng.choice(n_ctrl, size=2 * n, replace=False)
-                    half_C = perm_ctrl[:n]
-                    half_D = perm_ctrl[n:]
+                perm_ctrl = rng.choice(n_ctrl, size=2 * n, replace=False)
+                half_C = perm_ctrl[:n]
+                half_D = perm_ctrl[n:]
 
                 deltas_1[r] = X_stim[half_A].mean(axis=0) - X_ctrl[half_C].mean(axis=0)
                 deltas_2[r] = X_stim[half_B].mean(axis=0) - X_ctrl[half_D].mean(axis=0)
@@ -241,229 +228,3 @@ def compute_split_half_reliability(
         })
 
     return rows
-
-
-# ============================================================
-# E-DISTANCE RELIABILITY
-# ============================================================
-
-def euclidean_upper_sum(X, norms = None, block_size: int = 1024):
-    """Sum Euclidean distances for all unique pairs of rows in X.
-    Sum in blocks for memory efficiency.
-
-    Returns:
-        sum_{i < j} ||X[i] - X[j]||_2
-    """
-    n = X.shape[0]
-
-    # squared norm of each cell
-    if norms is None:
-        norms = np.einsum("ij,ij->i", X, X)
-
-    total = 0.0
-
-    for i in range(0, n, block_size):
-        i_end = min(i + block_size, n)
-
-        Xi = X[i:i_end]
-        ni = norms[i:i_end]
-
-        # Only calculate j >= i.
-        for j in range(i, n, block_size):
-            j_end = min(j + block_size, n)
-
-            Xj = X[j:j_end]
-            nj = norms[j:j_end]
-
-            # ||x-y||² = ||x||² + ||y||² - 2 x·y
-            D2 = ni[:, None] + nj[None, :] - 2.0 * (Xi @ Xj.T)
-
-            # Protect against tiny negative values from floating-point error.
-            np.maximum(D2, 0, out=D2)
-
-            np.sqrt(D2, out=D2)
-
-            if i == j:
-                # Same block: only take the strict upper triangle.
-                total += np.triu(D2, k=1).sum(dtype=np.float64)
-            else:
-                # Off-diagonal block: every pair is unique.
-                total += D2.sum(dtype=np.float64)
-
-    return total
-
-
-def euclidean_cross_sum(
-    X,
-    Y,
-    y_norms,
-    block_size=1024,
-):
-    """Euclidean distance of X and Y."""
-    x_norms = np.einsum("ij,ij->i", X, X)
-
-    total = 0.0
-
-    for i in range(0, X.shape[0], block_size):
-        i_end = min(i + block_size, X.shape[0])
-
-        Xi = X[i:i_end]
-        xi_norms = x_norms[i:i_end]
-
-        for j in range(0, Y.shape[0], block_size):
-            j_end = min(j + block_size, Y.shape[0])
-
-            Yj = Y[j:j_end]
-            yj_norms = y_norms[j:j_end]
-
-            D2 = (
-                xi_norms[:, None]
-                + yj_norms[None, :]
-                - 2.0 * (Xi @ Yj.T)
-            )
-
-            np.maximum(D2, 0, out=D2)
-            np.sqrt(D2, out=D2)
-
-            total += D2.sum(dtype=np.float64)
-
-    return total
-
-
-# Cell-count grid for rho_E(N) curves (n_half values).
-N_GRID = [8, 16, 32, 64, 128, 256, 512]
-
-def edistance_from_blocks(d_xy_sum, d_xx_sum, d_yy_sum, n_x, n_y):
-    """
-    Given precomputed sums of pairwise L2 distances between blocks X and Y
-    and within each block, return the energy distance.
-
-      E = 2 * mean_xy - mean_xx - mean_yy
-    where mean_xy = d_xy_sum / (n_x * n_y), etc.
-    """
-    mean_xy = d_xy_sum / (n_x * n_y)
-    mean_xx = d_xx_sum / (n_x * n_x)
-    mean_yy = d_yy_sum / (n_y * n_y)
-    return 2.0 * mean_xy - mean_xx - mean_yy
-
-def _sum_block_chunked(D, rows, cols, row_chunk=1024):
-    total = 0.0
-    for i in range(0, len(rows), row_chunk):
-        r = rows[i:i + row_chunk]
-        total += D[np.ix_(r, cols)].sum(dtype=np.float64)
-    return float(total)
-
-
-def _sum_within_chunked(D, idx, row_chunk=1024):
-    return _sum_block_chunked(D, idx, idx, row_chunk)
-
-
-def _sum_block(D, rows, cols):
-    """Sum of D[rows][:, cols]. Both rows, cols are 1d index arrays."""
-    return float(D[np.ix_(rows, cols)].sum())
-
-
-def _sum_within(D, idx):
-    """Sum of D[idx][:, idx], including diagonal (which is 0 for L2)."""
-    return float(D[np.ix_(idx, idx)].sum())
-
-
-def compute_e_distance_reliability(
-    perturbation,
-    X_pert,
-    X_ctrl,
-    D_cc_sum,
-    ctrl_norms,
-    task_seed,
-    n_grid = N_GRID,
-    n_seeds: int = 100
-) -> list[dict[str, Any]]:
-    """Computes the e-distance reliability metric. Adapted from the
-    compute_e_reliability.py script.
-
-    Compute ρ_E(N) at each N in n_grid + {full} for one perturbation.
-
-    Returns a list of dict rows (one per N), with the full pass tagged
-    n_half = -1.
-    """
-    n_ctrl = X_ctrl.shape[0]
-    n_pert = X_pert.shape[0]
-
-    # Precompute within-perturbation and perturbation-vs-control pairwise distances.
-    # D_cc_sum is passed in already (one-shot per condition).
-
-    # We do need D_pp directly, so keep
-    #D_pp_sum = 2 * euclidean_upper_sum(X_pert)
-    D_pp = pairwise_distances(X_pert, X_pert, metric="euclidean").astype(np.float64)
-    D_pp_sum = D_pp.sum(dtype=np.float64)
-    D_pc_sum = euclidean_cross_sum(X_pert, X_ctrl, ctrl_norms)
-
-    e_between = edistance_from_blocks(
-        D_pc_sum, D_pp_sum, D_cc_sum, n_pert, n_ctrl,
-    )
-
-    rng = np.random.default_rng(task_seed)
-    rows = []
-
-    # N values to evaluate: each grid N at most once, plus the full pass.
-    N_full = n_pert // 2
-    if N_full < 4:
-        return rows
-    grid_Ns = [N for N in n_grid if 4 <= N < N_full]
-    work_Ns = grid_Ns + [N_full]
-
-    # Degenerate effect (E_between <= 0): emit rho_E = 0 rows.
-    if not np.isfinite(e_between) or e_between <= 0:
-        for N in work_Ns:
-            rows.append(dict(
-                perturbation=perturbation,
-                n_half=N if N != N_full else -1,
-                e_within_med=np.nan,
-                e_between=e_between,
-                rho_E=0.0,
-                n_cells=n_pert,
-            ))
-        return rows
-
-    for N in work_Ns:
-        ratios = np.empty(n_seeds, dtype=np.float64)
-        for s in range(n_seeds):
-            perm = rng.permutation(n_pert)
-            h1 = perm[:N]
-            h2 = perm[N:2 * N]
-
-            if N == N_full and 2 * N == n_pert:
-                d12 = _sum_block_chunked(D_pp, h1, h2)
-                e_within = (4.0 * d12 - D_pp_sum) / (N * N)
-            else:
-                d11 = _sum_within_chunked(D_pp, h1)
-                d22 = _sum_within_chunked(D_pp, h2)
-                d12 = _sum_block_chunked(D_pp, h1, h2)
-                e_within = edistance_from_blocks(d12, d11, d22, N, N)
-
-            ratios[s] = e_within / e_between
-        e_within_med = float(np.median(ratios) * e_between)
-        rho = float(np.clip(1.0 - np.median(ratios), -1.0, 1.0))
-        rows.append(dict(
-            perturbation=perturbation,
-            n_half=N if N != N_full else -1,
-            e_within_med=e_within_med,
-            e_between=e_between,
-            rho_E=rho,
-            n_cells=n_pert,
-        ))
-
-    del D_pp
-    return rows
-
-
-def summarize_edist_results(cluster, all_rows, output_dir, cur_time) -> None:
-    """Summarize the edist results."""
-    df = pd.DataFrame(all_rows)
-    del all_rows
-
-    df.insert(0, "cluster", cluster)
-    out = output_dir / f"e_reliability_tahoe100m_cluster_{cluster}_{cur_time}.csv"
-    df.to_csv(out, index=False)
-
-    log.info(f"Wrote e-distance reliability results for cluster {cluster}")

@@ -176,7 +176,9 @@ def load_delta_p_results(
     clusters: set[int] | None = None,
     cell_lines: set[str] | None = None
 ) -> dict[str, Any]:
-    """Load the precomputed delta_p results."""
+    """Load the precomputed delta_p results. May need to accumulate a condition
+    across multiple .npz files.
+    """
     if ds_name == 'tahoe100m':
         # get all unique cell line IDs
         all_cell_line_ids = {
@@ -257,57 +259,3 @@ def load_delta_p_results(
         }
 
     return delta_p_data
-
-
-def load_influence_by_cell_line_moa(influence_dir: Path) -> pd.DataFrame:
-    """Aggregate the influence by cell line x MOA results into a single DF."""
-    pattern = re.compile(
-        r'^(raw|cp10k)_(CVCL_\d+)_influential_genes_(\d{8}-\d{6})\.csv$'
-    )
-
-    files = []
-
-    for path in influence_dir.glob('*.csv'):
-        match = pattern.match(path.name)
-        if match is None:
-            continue
-
-        mode, cell_line_id, timestamp = match.groups()
-
-        files.append({
-            'path': path,
-            'mode': mode,
-            'cell_line_id': cell_line_id,
-            'timestamp': timestamp,
-        })
-
-    if not files:
-        raise FileNotFoundError(
-            f"No matching influence CSV files found in {influence_dir}"
-        )
-
-    files_df = pd.DataFrame(files)
-
-    # Select latest file for each mode and cell line
-    latest_files = (
-        files_df
-        .sort_values('timestamp')
-        .drop_duplicates(
-            ['mode', 'cell_line_id'],
-            keep='last'
-        )
-    )
-
-    # Load and combine
-    influence_dfs = []
-
-    for _, row in latest_files.iterrows():
-        df = pd.read_csv(row['path'])
-
-        df['mode'] = row['mode']
-        df['cell_line_id'] = row['cell_line_id']
-
-        influence_dfs.append(df)
-
-    influence_df = pd.concat(influence_dfs, ignore_index=True)
-    return influence_df

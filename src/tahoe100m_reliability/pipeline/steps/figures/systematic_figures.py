@@ -367,36 +367,6 @@ class SystematicFigures(BaseSystematicFigures):
                     zorder=0
                 )
 
-                # # Label the most influential genes in each category
-                # n_labels = 1
-
-                # for category in categories:
-                #     category_df = plot_df[
-                #         plot_df['group'] == category
-                #     ].copy()
-
-                #     category_df['abs_influence'] = (
-                #         category_df[influence_col].abs()
-                #     )
-
-                #     top_labels = category_df.nlargest(
-                #         n_labels, 'abs_influence'
-                #     )
-
-                #     for _, row in top_labels.iterrows():
-                #         x_pos = categories.index(category)
-
-                #         ax.annotate(
-                #             row['group_id'],
-                #             xy=(x_pos, row[influence_col]),
-                #             xytext=(5, 5),
-                #             textcoords='offset points',
-                #             fontsize=7,
-                #             alpha=0.9,
-                #             ha='left',
-                #             va='bottom'
-                #         )
-
                 ax.set_title(influence_col.replace('_', ' ').title())
                 ax.set_ylabel('Influence')
                 ax.grid(axis='y', alpha=0.3)
@@ -443,22 +413,15 @@ class SystematicFigures(BaseSystematicFigures):
                 bbox_inches='tight'
             )
 
-            # Separate mean influence plot
+            # Separate mean influence plot; mostly done to have more summarized
+            # plots to add to the report
             influence_col = 'mean_influence'
-
             fig, ax = plt.subplots(figsize=(14, 5))
 
-            group_plot_df = df[
-                ['group_id', group, influence_col]
-            ].dropna().copy()
+            group_plot_df = df[['group_id', group, influence_col]].dropna().copy()
+            group_plot_df = group_plot_df.rename(columns={group: 'group'})
 
-            group_plot_df = group_plot_df.rename(
-                columns={group: 'group'}
-            )
-
-            global_plot_df = top_genes_df[
-                ['group_id', influence_col]
-            ].copy()
+            global_plot_df = top_genes_df[['group_id', influence_col]].copy()
             global_plot_df['group'] = 'Global'
 
             plot_df = pd.concat(
@@ -510,7 +473,7 @@ class SystematicFigures(BaseSystematicFigures):
 
             fig.tight_layout()
             plt.savefig(
-                self.output_dir / f"systema_{self.mode}_mean_influence_by_{group}.png",
+                self.output_dir / f"systema_{self.mode}_{influence_col}_by_{group}.png",
                 dpi=300,
                 bbox_inches='tight'
             )

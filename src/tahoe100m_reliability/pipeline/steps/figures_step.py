@@ -9,9 +9,6 @@ import re
 
 from pathlib import Path
 
-from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
-    load_influence_by_cell_line_moa,
-)
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
     get_cell_line_metadata,
     get_drug_metadata,
@@ -75,11 +72,11 @@ class FiguresStep(PipelineStep):
 
         parser.add_argument(
             '--preprocess-dir', dest='preprocess_dir', type=Path,
-            help="Path to the preprocess resuls; should contain combined_index_treatment_sets.json"
+            help="Path to the preprocess resuls"
         )
         parser.add_argument(
             '--reliability-raw-dir', dest='reliability_raw_dir', type=Path,
-            help="Path to the reliability resuls"
+            help="Path to the (raw, unnormalized) reliability resuls"
         )
         parser.add_argument(
             '--reliability-cp10k-dir', dest='reliability_cp10k_dir', type=Path,
@@ -91,11 +88,11 @@ class FiguresStep(PipelineStep):
         )
         parser.add_argument(
             '--systematic-dir', dest='systematic_dir', type=Path,
-            help='Path to the systematic results (assumes both raw and cp10k are in there)'
+            help='Path to the systematic results (must contain both raw and cp10k results)'
         )
 
-    def __generate_preprocessing_figures(self):
-        # Generate preprocessing figures
+    def __generate_preprocess_figures(self):
+        """Generate preprocess figures."""
         if not self.__preprocess_dir:
             return
 
@@ -115,7 +112,7 @@ class FiguresStep(PipelineStep):
         figures.generate_figures()
 
     def __generate_reliability_figures(self):
-        # Generate reliability figures
+        """Generate reliability figures."""
         rel_map = {
             'raw': self.__reliability_raw_dir,
             'cp10k': self.__reliability_cp10k_dir
@@ -133,7 +130,7 @@ class FiguresStep(PipelineStep):
             figures.generate_figures()
 
     def __generate_systematic_figures(self):
-        # Generate systematic figures
+        """Generate systematic figures."""
         if not self.__systematic_dir:
             return
 
@@ -184,7 +181,7 @@ class FiguresStep(PipelineStep):
         return influence_df, True
 
     def __generate_gsea_figures(self):
-        # Generate GSEA figures
+        """Generate GSEA figures; influence plots also require systematic results."""
         if not self.__gsea_dir:
             return
 
@@ -298,7 +295,7 @@ class FiguresStep(PipelineStep):
     def run(self) -> None:
         """Generate figures."""
 
-        self.__generate_preprocessing_figures()
+        self.__generate_preprocess_figures()
         self.__generate_reliability_figures()
         self.__generate_systematic_figures()
         self.__generate_gsea_figures()

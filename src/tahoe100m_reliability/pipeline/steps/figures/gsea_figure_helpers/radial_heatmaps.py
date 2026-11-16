@@ -311,10 +311,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             for moa in moas
         }
 
-        # ========================================================
-        # MODE LOOP
-        # ========================================================
-
+        # Select mode df
         mode_df = df[df["mode"] == mode].copy()
 
         if mode_df.empty:
@@ -331,10 +328,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             endspace=False,
         )
 
-        # ----------------------------------------------------
-        # DRAW HEATMAP TILES
-        # ----------------------------------------------------
-
+        # Draw heatmap tiles
         for sector in circos.sectors:
 
             moa = sector.name
@@ -412,9 +406,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 color="black",
             )
 
-        # ----------------------------------------------------
-        # FIGURE
-        # ----------------------------------------------------
+        # Set up the figure
 
         fig = circos.plotfig()
 
@@ -428,19 +420,13 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             0.80,
         ])
 
-        # ----------------------------------------------------
-        # PATHWAY LABELS + CATEGORY BRACKETS
-        # ----------------------------------------------------
+        # Set up pathway labels and categories
 
         label_angle = -self.__top_gap / 2
         theta = np.deg2rad(label_angle)
 
         ax = circos.ax
         fig = ax.figure
-
-        # ----------------------------------------------------
-        # PATHWAY LABELS — draw once
-        # ----------------------------------------------------
 
         pathway_texts = {}
 
@@ -468,10 +454,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 clip_on=False,
             )
 
-        # ----------------------------------------------------
-        # CALCULATE THE ACTUAL ANGULAR ENDPOINTS OF THE LABELS
-        # ----------------------------------------------------
-
+        # Calculate angular endpoints of labels os we know where to put them
         fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
 
@@ -519,10 +502,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         # Short bracket end caps.
         cap_angle = np.deg2rad(0.7)
 
-        # ----------------------------------------------------
-        # CATEGORY BRACKETS + CATEGORY NAMES
-        # ----------------------------------------------------
-
+        # Category labels
         for category, first, last in category_spans:
 
             first_pathway = pathway_order[first]
@@ -569,10 +549,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         if moa_clusters is not None:
             self.__outline_moa_clusters(circos, moa_clusters)
 
-        # ----------------------------------------------------
-        # TITLE
-        # ----------------------------------------------------
-
+        # set title
         fig.suptitle(
             f"{title} ({mode.upper()})",
             y=0.95,
@@ -580,10 +557,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             fontweight="bold",
         )
 
-        # ----------------------------------------------------
-        # SHARED NES COLORBAR
-        # ----------------------------------------------------
-
+        # Add NES colorbar
         sm = ScalarMappable(norm=norm, cmap=self.cmap)
         sm.set_array([])
 
@@ -614,10 +588,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             pad=1,
         )
 
-        # ----------------------------------------------------
-        # FOOTNOTE
-        # ----------------------------------------------------
-
+        # Add footnote
         fig.text(
             0.50,
             -0.055,
