@@ -28,7 +28,7 @@ uv sync
 To run, run
 
 ```bash
-uv run tahoe100m-reliability
+uv run tahoe100m-reliability [command] [args]
 ```
 
 The pipeline can be run as a full pipeline (either as the Tahoe-100M-specific pipeline (`all`) or the regression pipeline (`regression`)), or as individual steps. All options are described below (`uv run tahoe100m-reliability -h`).
