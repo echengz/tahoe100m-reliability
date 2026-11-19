@@ -44,9 +44,9 @@ positional arguments:
     gsea                Runs the GSEA step of the pipeline
     systematic          Runs the systematic step of the pipeline
     figures             Runs the figures step of the pipeline
-    regression          Run the regression pipeline on the original 29 datasets
-    r-reliability       Run the regression reliability step on the original 29 datasets
-    r-systematic        Run the regression systematic step on the original 29 datasets
+    regression          Run the regression pipeline on the previously evaluated 12 cellular datasets
+    r-reliability       Run the regression reliability step on the previously evaluated 12 cellular datasets
+    r-systematic        Run the regression systematic step on the previously evaluated 12 cellular datasets
 ```
 
 Please note that the `preprocess` or `reliability` steps have high memory requirements, and should be run on a machine with sufficient RAM and disk space as they directly deal with the magnitude of the Tahoe-100M dataset.

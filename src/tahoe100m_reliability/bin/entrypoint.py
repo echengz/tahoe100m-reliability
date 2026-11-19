@@ -82,21 +82,21 @@ def build_parser() -> argparse.ArgumentParser:
     # REGRESSION PIPELINE
     regression_parser = subparsers.add_parser(
         'regression',
-        help='Run the regression pipeline on the original 29 datasets'
+        help='Run the regression pipeline on the previously evaluated 12 cellular datasets'
     )
     RegressionPipelineRunner.add_cli_args(regression_parser)
 
     # REGRESSION RELIABILITY
     regression_reliability_parser = subparsers.add_parser(
         'r-reliability',
-        help='Run the regression reliability step on the original 29 datasets'
+        help='Run the regression reliability step on the previously evaluated 12 cellular datasets'
     )
     RegressionReliabilityStep.add_cli_args(regression_reliability_parser)
 
     # REGRESSION SYSTEMATIC
     regression_systematic_parser = subparsers.add_parser(
         'r-systematic',
-        help='Run the regression systematic step on the original 29 datasets'
+        help='Run the regression systematic step on the previously evaluated 12 cellular datasets'
     )
     RegressionSystematicStep.add_cli_args(regression_systematic_parser)
 

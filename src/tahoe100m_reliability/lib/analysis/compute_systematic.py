@@ -1,5 +1,5 @@
 """
-Functions to support computing systematic metrics.
+Functions to support computing vectorized systematic metrics.
 """
 import numpy as np
 
@@ -89,10 +89,9 @@ def compute_gene_influences(
 
     valid = (p_without > 1e-24) & (a_without > 1e-24)
 
-    # Reuse p_without as the denominator
+    # Compute leave-one-out specificity
     np.multiply(p_without, a_without, out=p_without)
 
-    # Reuse dot_without to store the leave-one-out specificity
     np.square(dot_without, out=dot_without)
     np.divide(
         dot_without,
@@ -115,7 +114,9 @@ def compute_pathway_influences(
     frac_systematic,
 ):
     """
-    Compute pathway influence for each pathway.
+    Compute pathway influence for each pathway. Expects pathway
+    masks that mask the lead genes as defined by the GSEA analysis
+    results.
     """
     pathway_masks = np.asarray(pathway_masks, dtype=bool)
     delta_p = np.asarray(delta_p, dtype=np.float64)
