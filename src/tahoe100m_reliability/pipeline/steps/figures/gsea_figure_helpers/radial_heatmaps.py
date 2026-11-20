@@ -152,12 +152,21 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
         return tuple(rgba)
 
+
     def __outline_moa_clusters(
-        self, circos, moa_clusters, color="black", linewidth=0.5,
+        self,
+        circos,
+        moa_clusters,
+        color="black",
+        linewidth=0.5,
+        label_radius=None,
     ):
-        """Draw a continuous closed outline around each MOA cluster."""
+        """Draw a continuous closed outline and label each MOA cluster."""
+
         ax = circos.ax
-        sectors = {s.name: s for s in circos.sectors}
+
+        if label_radius is None:
+            label_radius = self.__outer_radius + 15
 
         for cluster, moas in moa_clusters.items():
 
@@ -170,14 +179,12 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             if not cluster_sectors:
                 continue
 
-            # Check that all expected MOAs were found
             if len(cluster_sectors) != len(moas):
                 missing = set(moas) - {
                     s.name for s in cluster_sectors
                 }
                 log.warning(f"Cluster {cluster}: missing MOAs {missing}")
 
-            # Use pyCirclize's own radian coordinates
             start = cluster_sectors[0].rad_lim[0]
             end = cluster_sectors[-1].rad_lim[1]
 
@@ -210,6 +217,23 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                     linewidth=linewidth,
                     zorder=30,
                 )
+
+            # Cluster label at angular midpoint
+            mid_angle = (start + end) / 2
+
+            ax.text(
+                mid_angle,
+                label_radius,
+                f'Cluster {cluster}',
+                ha="center",
+                va="center",
+                fontsize=8,
+                fontweight="bold",
+                rotation=0,
+                rotation_mode="anchor",
+                clip_on=False,
+                zorder=40,
+            )
 
     def plot_moa_radial_heatmaps(
         self,
