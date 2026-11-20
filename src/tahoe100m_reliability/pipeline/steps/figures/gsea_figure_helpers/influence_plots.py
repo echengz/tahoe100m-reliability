@@ -57,7 +57,7 @@ class GSEAInfluenceFigures:
         return plot_df
 
     def __compute_group_correlations(
-        self, plot_df: pd.DataFrame, group_by: str = 'term'
+        self, plot_df: pd.DataFrame, group_by: str = 'term', outfile: Path | None = None
     ) -> tuple[list, dict]:
         """Compute group correlations. Computes a score using the
         spearman rank correlation weighted by the number of significant
@@ -67,32 +67,57 @@ class GSEAInfluenceFigures:
         """
         group_correlations = {}
         for term, term_df in plot_df.groupby(group_by):
+
+            # rank correlation by all
             if len(term_df) >= 3:
                 rho, pval = spearmanr(
                     term_df["abs_nes"],
                     term_df["mean_influence"]
                 )
+            else:
+                rho, pval = np.nan, np.nan
 
-                # weight by proportion of significant NES values
-                n_total = len(term_df)
-                n_sig = term_df["significant"].sum()
-                score = abs(rho) * (np.log1p(n_sig) / np.log1p(n_total))
+            # rank correlation by significant
+            sig_df = term_df.loc[term_df["significant"]]
+            if len(sig_df) >= 3:
+                rho_sig, pval_sig = spearmanr(
+                    sig_df["abs_nes"],
+                    sig_df["mean_influence"],
+                )
+            else:
+                rho_sig, pval_sig = np.nan, np.nan
 
-                group_correlations[term] = {
-                    "rho": rho,
-                    "pval": pval,
-                    "n_sig": n_sig,
-                    "n_total": n_total,
-                    "score": score,
-                }
+            # score by taking strength of association (regardless of direction)
+            # weighted by proportion of significant NES values
+            n_total = len(term_df)
+            n_sig = term_df["significant"].sum()
+            score = abs(rho) * (n_sig / n_total)
+
+            group_correlations[term] = {
+                "rho": rho,
+                "pval": pval,
+                "rho_sig": rho_sig,
+                "pval_sig": pval_sig,
+                "n_sig": n_sig,
+                "n_total": n_total,
+                "n_sig_frac": n_sig / n_total,
+                "score": score,
+            }
 
         if not group_correlations:
             raise ValueError(f"no {group_by} correlations found")
 
+        if outfile:
+            df = (
+                pd.DataFrame.from_dict(group_correlations, orient='index')
+                .rename_axis('pathway').reset_index()
+            )
+            df.to_csv(outfile, index=False)
+
         # sort by those with the highest score in either direction
         groups = sorted(
             group_correlations,
-            key=lambda group: abs(group_correlations[group]['score']),
+            key=lambda group: group_correlations[group]['score'],
             reverse=True
         )
 
@@ -105,9 +130,7 @@ class GSEAInfluenceFigures:
         color_by: str,
         colors: dict,
     ) -> None:
-        """Plot the provided term df along with its best fit on the given axis,
-        along with best fits if provided.
-        """
+        """Plot the provided term df."""
         x = term_df["abs_nes"]
         y = term_df["mean_influence"]
 
@@ -179,7 +202,9 @@ class GSEAInfluenceFigures:
         Colored by MOA.
         """
         plot_df = self.__prepare_plot_data(df, mode, target_pathways=target_pathways)
-        terms, term_correlations = self.__compute_group_correlations(plot_df)
+        terms, term_correlations = self.__compute_group_correlations(
+            plot_df, outfile=self.__output_dir / f'pathway_correlations_{mode}.csv'
+        )
 
         # MOA colours shared across all subplots
         moas = sorted(plot_df["moa"].unique())
@@ -204,10 +229,13 @@ class GSEAInfluenceFigures:
             term_df = plot_df[plot_df["term"] == term]
             self.__plot_term_df(ax, term_df, 'moa', moa_colors)
 
-            # add title with the weighted spearmanr score
+            # add title and spearman rank correlation scores
             results = term_correlations[term]
+            rho = results['rho']
+            rho_sig = results['rho_sig']
+
             ax.set_title(
-                f"{term}\nweighted $r_s = {results['score']:.2f},\\ p = {results['pval']:.2e}$",
+                f"{term}, $r_s$ = {rho:.2f}, $r_s^*$ = {rho_sig:.2f}",
                 fontsize=8,
             )
 
@@ -230,92 +258,17 @@ class GSEAInfluenceFigures:
             self.__output_dir / filename, bbox_inches="tight", dpi=300,
         )
 
-    def __apply_best_fit_to_terms(self, df: pd.DataFrame) -> dict:
-        """Apply z-score normalized linear regression to significant
-        observations of each pathway.
-        """
-        best_fits = {}
-
-        for term, term_df in df.groupby("term"):
-            sig_df = term_df.loc[term_df["significant"]]
-
-            x = sig_df["abs_nes"]
-            y = sig_df["mean_influence"]
-
-            best_fits[term] = {
-                'x_mean': x.mean(), 'x_std': x.std(), 'y_mean': y.mean(), 'y_std': y.std()
-            }
-
-            if len(x) < 3 or x.std() == 0 or y.std() == 0:
-                best_fits[term].update({"slope": None, "intercept": None})
-                continue
-
-            x_norm = (x - x.mean()) / x.std()
-            y_norm = (y - y.mean()) / y.std()
-
-            slope, intercept, _, _, _ = linregress(x_norm, y_norm)
-            best_fits[term].update({"slope": slope, "intercept": intercept})
-
-        return best_fits
-
-    def __plot_best_fits(
-        self, ax, term_df: pd.DataFrame, best_fits: dict, colors: dict
-    ) -> None:
-        """Plot best fit lines."""
-        for term in term_df["term"].unique():
-            fit = best_fits.get(term)
-            if fit is None or fit["slope"] is None:
-                continue
-
-            # Generate fitted coordinates to significant values
-            sig_df = term_df.loc[
-                (term_df["term"] == term) & term_df["significant"]
-            ]
-
-            x_fit = np.linspace(
-                sig_df["abs_nes"].min(),
-                sig_df["abs_nes"].max(),
-                100,
-            )
-
-            x_fit_norm = (
-                x_fit - fit["x_mean"]
-            ) / fit["x_std"]
-
-            y_fit_norm = (
-                fit["slope"] * x_fit_norm + fit["intercept"]
-            )
-
-            # Transform fitted y values back to original scale
-            y_fit = y_fit_norm * fit["y_std"] + fit["y_mean"]
-
-            ax.plot(
-                x_fit,
-                y_fit,
-                color=colors[term],
-                linestyle="--",
-                linewidth=1.5,
-                alpha=0.5,
-                zorder=2,
-            )
-
     def __add_axis_legend(
         self,
         ax,
         title: str,
         pathways: list[str],
-        best_fits: list[float],
         colors: dict,
         fontsize: int = 8.5,
     ) -> None:
         """Add a pathway legend to an individual subplot."""
-
         legend_elements = []
         for pathway in pathways:
-            slope = 'N/A'
-            if pathway in best_fits and best_fits[pathway]['slope']:
-                slope = f"{best_fits[pathway]['slope']:.2f}"
-
             legend_elements.append(
                 Line2D(
                     [0], [0],
@@ -323,7 +276,7 @@ class GSEAInfluenceFigures:
                     color="w",
                     markerfacecolor=colors[pathway],
                     markersize=fontsize - 1,
-                    label=f'{pathway}, $m_s$= {slope}',
+                    label=pathway
                 )
             )
 
@@ -384,31 +337,6 @@ class GSEAInfluenceFigures:
             if num_top_groups:
                 groups = groups[:num_top_groups]
 
-            # Assign pathway colors using the turbo colormap based on the best fits
-            best_fits = self.__apply_best_fit_to_terms(plot_df)
-            cmap = plt.get_cmap("turbo")
-            pathway_colors = {}
-
-            for group in groups:
-                group_terms = plot_df.loc[
-                    plot_df["group"] == group, "term"
-                ].unique()
-
-                sorted_terms = sorted(
-                    group_terms,
-                    key=lambda term: (
-                        best_fits[term]["slope"]
-                        if best_fits[term]["slope"] is not None
-                        else float("-inf")
-                    ),
-                    reverse=True,
-                )
-
-                positions = np.linspace(0.05, 0.95, len(sorted_terms))
-
-                for term, position in zip(sorted_terms, positions):
-                    pathway_colors[term] = cmap(position)
-
             # Create subplot grid
             ncols = 2
             nrows = int(np.ceil(len(groups) / ncols))
@@ -422,41 +350,27 @@ class GSEAInfluenceFigures:
             )
 
             axes = np.asarray(axes).flatten()
+            cmap = plt.get_cmap("turbo")
 
             for ax, group in zip(axes, groups):
                 group_df = plot_df[plot_df["group"] == group]
-
-                # get terms and sort by their slope
                 terms = sorted(group_df["term"].unique())
-                sorted_terms = sorted(
-                    terms,
-                    key=lambda p: best_fits[p]['slope'] if best_fits[p]['slope']
-                        is not None else float("-inf"),
-                    reverse=True,
-                )
 
-                # plot in reverse order so highest slopes are plotted on top
-                for term in reversed(sorted_terms):
+                pathway_colors = {}
+                positions = np.linspace(0.05, 0.95, len(terms))
+                for term, position in zip(terms, positions):
+                    pathway_colors[term] = cmap(position)
+
+                for term in terms:
                     term_df = group_df[group_df["term"] == term]
 
                     self.__plot_term_df(
                         ax, term_df, "term", pathway_colors,
                     )
 
-                    self.__plot_best_fits(
-                        ax, term_df, best_fits, pathway_colors
-                    )
-
-                # Group title with average pathway correlation
-                ax.set_title(
-                    f"{group}\nWeighted mean |$r_s$| = "
-                    f"{group_correlations[group]:.2f}",
-                    fontsize=11,
-                )
-
-                self.__add_axis_legend(
-                    ax, "Pathway", sorted_terms, best_fits, pathway_colors,
-                )
+                # Group title and legend
+                ax.set_title(group, fontsize=11)
+                self.__add_axis_legend(ax, "Pathway", terms, pathway_colors)
 
             # Remove unused subplot axes
             for ax in axes[len(groups):]:
