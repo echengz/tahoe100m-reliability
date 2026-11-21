@@ -136,10 +136,13 @@ class FiguresStep(PipelineStep):
 
         systema_output_dir = self.__output_dir / 'systematic'
         systema_output_dir.mkdir(parents=True, exist_ok=True)
+        organ_by_cell_line = get_organ_by_cell_line()
 
         for mode in ['raw', 'cp10k']:
             log.info(f"Generating {mode} systema figures...")
-            figures = SystematicFigures(self.__systematic_dir, systema_output_dir, mode)
+            figures = SystematicFigures(
+                self.__systematic_dir, systema_output_dir, mode, organ_by_cell_line
+            )
             figures.generate_figures()
 
         # combined results
