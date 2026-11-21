@@ -499,7 +499,7 @@ class CombinedSystematicFigures(BaseSystematicFigures):
 
     def plot_change_in_influence(self, df: pd.DataFrame, plot_df: pd.DataFrame) -> None:
         """Plots the change in influence scorse before and after normalization."""
-        fig, ax = plt.subplots(figsize=(8, 7))
+        fig, ax = plt.subplots(figsize=(8, 6))
 
         # Reference line: equal influence in both runs
         lower = min(plot_df["mean_abs_influence_raw"].min(),
@@ -517,7 +517,7 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         )
 
         # Identify top genes in each dataset, and label their union
-        n_top_genes = 8
+        n_top_genes = 5
         top_raw = set(
             df.nlargest(n_top_genes, "mean_abs_influence_raw")["group_id"]
             .dropna()
@@ -536,10 +536,10 @@ class CombinedSystematicFigures(BaseSystematicFigures):
             xytext = (4, 4)
 
             # adjust for specific genes
-            if row["group_id"] == "MT-RNR1":
+            if row["group_id"] in ["MT-RNR1", "MT-ND1"]:
                 xytext = (-30, 6)
             elif row["group_id"] in ["MT-ATP6", "FN1"]:
-                xytext = (4, 1)
+                xytext = (6, -2)
             elif row["group_id"] == "IGFBP3":
                 xytext = (2, 6)
             elif row["group_id"] == "MT-CO1":
@@ -550,7 +550,7 @@ class CombinedSystematicFigures(BaseSystematicFigures):
                 (row["mean_abs_influence_raw"], row["mean_abs_influence_cp10k"]),
                 xytext=xytext,
                 textcoords="offset points",
-                fontsize=7,
+                fontsize=8,
             )
 
         # Highlight top genes
@@ -601,7 +601,9 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         ax.grid(True, which="both", alpha=0.2)
 
         fig.tight_layout()
-        fig.savefig(self.output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight")
+        fig.savefig(
+            self.output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight"
+        )
 
     def generate_figures(self) -> None:
         # Create combined DF
