@@ -85,7 +85,8 @@ uv run tahoe100m-reliability all \
 An overview of the source code is defined as follows:
 
 * `bin`: Contains the entrypoint to this package. Calls entire pipelines or individual steps to run, which are subsequently defined in `pipeline` and `regression`
-* `lib`: Contains shared code used by the pipelines. Includes the following:
+    * Also contains one-off scripts in `scripts` used for investigative/developmental purposes
+* `lib`: Contains shared code used by the pipelines. Includes the folloxwing:
     * `analysis`: Computational code used for analysis in the `reliability` and `systematic` steps
     * `ingest`: Helper functions for loading data, whether from third-party sources (e.g. streaming Tahoe-100M on HuggingFace) or commonly-used intermediate results from the pipeline (e.g. reliability results)
     * `step`: Base classes for various pipeline steps

@@ -2,7 +2,6 @@
 Runs step 2 of the pipeline: GSEA.
 """
 import argparse
-import blitzgsea as blitz
 import logging
 import gseapy as gp
 import numpy as np
@@ -21,8 +20,11 @@ from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
     load_gene_ids,
     load_reliable_conditions,
 )
+from tahoe100m_reliability.lib.ingest.msigdb_hallmark import (
+    load_hallmark_sets,
+)
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
-    get_cell_line_metadata,
+    get_organ_by_cell_line,
 )
 from tahoe100m_reliability.lib.step.base_systematic_step import BaseSystematicStep
 
@@ -33,15 +35,6 @@ logging.getLogger("gseapy").setLevel(logging.ERROR)
 
 FDR_THRESHOLD = 0.05
 CLUSTER_MIN_PATHWAY_COVERAGE = 0.90
-
-
-def load_hallmark_sets():
-    """Load hallmark sets."""
-    library = blitz.enrichr.get_library("MSigDB_Hallmark_2020")
-    return {
-        term: [gene.upper() for gene in genes]
-        for term, genes in library.items()
-    }
 
 
 def gsea_nes(vec, genes_upper, hallmark_sets):
@@ -224,17 +217,7 @@ class GseaStep(BaseSystematicStep):
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Summarize GSEA results, also add organ information."""
         # add organ information
-        metadata = get_cell_line_metadata(to_pandas=True)
-        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-
-        metadata["organ"] = (
-            metadata["Organ"]
-            .where(metadata["Organ"].notna())
-            .astype("string")
-            .str.strip()
-        )
-
-        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+        organ_by_cell_line = get_organ_by_cell_line()
         results = {}
 
         for axis, rows in {"global": all_rows, "moa": moa_rows}.items():

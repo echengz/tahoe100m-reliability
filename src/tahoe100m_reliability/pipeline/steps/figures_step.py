@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
-    get_cell_line_metadata,
     get_drug_metadata,
+    get_organ_by_cell_line,
 )
 from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
@@ -153,11 +153,7 @@ class FiguresStep(PipelineStep):
 
         log.info("Generating GSEA figures...")
         gsea_output_dir = self.__output_dir / 'gsea'
-
-        metadata = get_cell_line_metadata(to_pandas=True)
-        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-        metadata["organ"] = metadata["Organ"].astype(str).str.strip()
-        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+        organ_by_cell_line = get_organ_by_cell_line()
 
         # Instantiate classes to handle heatmap plotting
         indv_heatmaps = GSEAIndividualHeatmaps(

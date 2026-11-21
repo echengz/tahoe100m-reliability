@@ -29,7 +29,7 @@ def get_cell_line_metadata(to_pandas: bool = False) -> IterableDataset | pd.Data
     return __get_dataset('cell_line_metadata', to_pandas=to_pandas)
 
 
-def get_drug_metadata(to_pandas: bool = False)  -> IterableDataset | pd.DataFrame:
+def get_drug_metadata(to_pandas: bool = False) -> IterableDataset | pd.DataFrame:
     return __get_dataset('drug_metadata', to_pandas=to_pandas)
 
 
@@ -47,3 +47,13 @@ def list_tahoe100m_parquet_files() -> list[str]:
         f'hf://datasets/{TAHOE_100M_DATASET}/{f}' for f in files
         if f.startswith('data/') and f.endswith('.parquet')
     ]
+
+
+def get_organ_by_cell_line() -> dict:
+    """Get mapping of cell line to organ."""
+    metadata = get_cell_line_metadata(to_pandas=True)
+    metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
+    metadata["organ"] = metadata["Organ"].astype(str).str.strip()
+    organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+
+    return organ_by_cell_line
