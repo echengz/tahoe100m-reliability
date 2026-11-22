@@ -156,7 +156,8 @@ class InfluenceAccumulatorHandler:
         self.output_dir = output_dir
         self.cur_time = cur_time
 
-    def initialize_accumulator(self) -> dict:
+    def set_up_accumulators_by_mode(self) -> dict:
+        """Set up accumulators by mode."""
         return {'raw': {}, 'cp10k': {}}
 
     def map_gene_ids(
@@ -228,17 +229,18 @@ class InfluenceAccumulatorHandler:
 
         return df
 
-    def exists(self, mode: str, cell_line_id: str) -> bool:
-        """Check if a given mode/cell line combo has been encountered."""
-        pass
-
-    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path) -> None:
-        """Initialize accumulators for the given cell line and mode."""
+    def ensure_exists(
+        self, mode: str, cell_line_id: str, moa: str, ctrl_gene_expressions_dir: Path
+    ) -> None:
+        """Check if a given mode/cell line/moa accumulator has been encountered;
+        if not, add it.
+        """
         pass
 
     def accumulate_influence(
         self,
         mode: str,
+        moa: str,
         cell_line_id: str,
         delta_p,
         delta_avg,
@@ -254,10 +256,7 @@ class InfluenceAccumulatorHandler:
 
 
 class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
-    """Class to handle gene influence accumulators by cell line:
-        - gene
-        - gene x MOA
-    """
+    """Class to handle gene influence accumulation"""
     def __init__(
         self,
         gene_metadata: pd.DataFrame,
@@ -266,17 +265,20 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
     ) -> None:
         super().__init__(gene_metadata, output_dir, cur_time)
 
-        self.gene_accumulators = self.initialize_accumulator()
-        self.gene_moa_accumulators = self.initialize_accumulator()
+        # Just use one set of accumulators because the MOA ones can be aggregated
+        # to get the cell line and global ones
+        self.gene_accumulators = self.set_up_accumulators_by_mode()
 
-    def exists(self, mode: str, cell_line_id: str) -> bool:
-        """Check if a given mode/cell line combo has been encountered.
-        Checking just one of the accumulators is enough.
+    def ensure_exists(
+        self, mode: str, cell_line_id: str, moa: str, ctrl_gene_expressions_dir: Path
+    ) -> None:
+        """Check if a given mode/cell line/moa accumulator has been encountered;
+        if not, add it.
         """
-        return cell_line_id in self.gene_accumulators[mode]
+        if (cell_line_id, moa) in self.gene_accumulators[mode]:
+            return
 
-    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path):
-        """Initialize accumulators for the given cell line and mode."""
+        # Initialize accumulators for the given cell line, mode, amd moa
         gene_ids, metadata_by_id, token_id_to_position = \
             self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)
 
@@ -293,11 +295,12 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
                 f"{len(gene_groups)} mapped genes, {len(gene_ids)} vector genes"
             )
 
-        self.gene_accumulators[mode][cell_line_id] = InfluenceAccumulator(gene_groups)
+        self.gene_accumulators[mode][(cell_line_id, moa)] = InfluenceAccumulator(gene_groups)
 
     def accumulate_influence(
         self,
         mode: str,
+        moa: str,
         cell_line_id: str,
         delta_p,
         delta_avg,
@@ -309,7 +312,7 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             delta_p, delta_avg, working_results, frac_systematic
         )
 
-        gene_accumulator = self.gene_accumulators[mode][cell_line_id]
+        gene_accumulator = self.gene_accumulators[mode][(cell_line_id, moa)]
         gene_accumulator.accumulate(influences, valid, frac_systematic)
 
     def finalize_influence(self, mode: str) -> None:
@@ -317,7 +320,7 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         Since there are a lot of genes, only keep n per cell line and m per global.
         """
-        n_per_cell_line = 200
+        n_per_group = 200
         n_per_global = 1000
 
         output_dir = self.output_dir / 'gene_influences'
@@ -325,23 +328,34 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         # to aggregate influence across all cell lines
         global_gene_influences = {}
-        top_genes_by_cell_line = []
+        cell_line_influences = {}
+        top_genes_by_cell_line_moa = []
 
-        for cell_line_id, accumulator in self.gene_accumulators[mode].items():
+        for (cell_line_id, moa), accumulator in self.gene_accumulators[mode].items():
             influences = accumulator.get_accumulation()
             if not influences:
                 continue
 
-            # summarize influence for this cell line, and 
+            # summarize influence for this cell line x moa 
             df = self.summarize_accumulation(
                 influences,
-                extra_fields={'cell_line_id': cell_line_id},
-                n_groups=n_per_cell_line,
+                extra_fields={'cell_line_id': cell_line_id, 'moa': moa},
+                n_groups=n_per_group,
             )
-            top_genes_by_cell_line.append(df)
+            top_genes_by_cell_line_moa.append(df)
 
-            # aggregate influence globally
+            # aggregate influence globally and by cell line
+            if cell_line_id not in cell_line_influences:
+                cell_line_influences[cell_line_id] = {}
+
+            # aggregate influence globally and by cell line
             for gene_id, influence in influences.items():
+                if gene_id not in cell_line_influences[cell_line_id]:
+                    cell_line_influences[cell_line_id][gene_id] = {
+                        key: 0
+                        for key in influence
+                    }
+
                 if gene_id not in global_gene_influences:
                     global_gene_influences[gene_id] = {
                         key: 0
@@ -350,19 +364,39 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
                     # keep track of which cell lines had the given gene
                     global_gene_influences[gene_id]['cell_lines'] = set()
 
+                cell_line_gene = cell_line_influences[cell_line_id][gene_id]
                 global_gene = global_gene_influences[gene_id]
                 global_gene['cell_lines'].add(cell_line_id)
 
                 for key, value in influence.items():
+                    cell_line_gene[key] += value
                     global_gene[key] += value
 
         # save results
-        if top_genes_by_cell_line:
-            top_genes_by_cell_line_df = pd.concat(top_genes_by_cell_line, ignore_index=True)
-            del top_genes_by_cell_line
+        if top_genes_by_cell_line_moa:
+            top_genes_by_cell_line_moa_df = pd.concat(top_genes_by_cell_line_moa, ignore_index=True)
+            top_genes_by_cell_line_moa_df.to_csv(
+                output_dir / f'systema_{mode}_top{n_per_group}_by_cell_line_moa_{self.cur_time}.csv',
+                index=False
+            )
+            del top_genes_by_cell_line_moa, top_genes_by_cell_line_moa_df
 
+        if cell_line_influences:
+            top_genes_by_cell_line = []
+
+            for cell_line_id, gene_influences in cell_line_influences.items():
+                df = self.summarize_accumulation(
+                    gene_influences,
+                    extra_fields={'cell_line_id': cell_line_id},
+                    n_groups=n_per_group,
+                )
+                top_genes_by_cell_line.append(df)
+
+            del cell_line_influences
+
+            top_genes_by_cell_line_df = pd.concat(top_genes_by_cell_line, ignore_index=True)
             top_genes_by_cell_line_df.to_csv(
-                output_dir / f'systema_{mode}_top{n_per_cell_line}_by_cell_line_id_{self.cur_time}.csv',
+                output_dir / f'systema_{mode}_top{n_per_group}_by_cell_line_{self.cur_time}.csv',
                 index=False
             )
             del top_genes_by_cell_line_df
@@ -376,13 +410,14 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
                 n_groups=n_per_global,
                 outfile=output_dir / f'systema_{mode}_top{n_per_global}_global_{self.cur_time}.csv'
             )
+            del global_gene_influences
 
         # release memory
         self.gene_accumulators[mode].clear()
 
 
 class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
-    """Class to handle GSEA pathway influence accumulators by cell line:
+    """Class to handle GSEA pathway influence accumulation by cell line:
         - global x pathway
         - MOA x pathway
     """
@@ -396,8 +431,8 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
     ) -> None:
         super().__init__(gene_metadata, output_dir, cur_time)
 
-        self.gsea_global_accumulators = self.initialize_accumulator()
-        self.gsea_moa_accumulators = self.initialize_accumulator()
+        self.gsea_global_accumulators = self.set_up_accumulators_by_mode()
+        self.gsea_moa_accumulators = self.set_up_accumulators_by_mode()
 
         # load GSEA data
         self.gsea_global_df = (
@@ -452,14 +487,9 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         return group_ids
 
-    def exists(self, mode: str, cell_line_id: str) -> bool:
-        """Check if a given mode/cell line combo has been encountered.
-        Checking just one of the accumulators is enough.
-        """
-        return cell_line_id in self.gsea_global_accumulators[mode]
-
-    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path):
-        """Initialize accumulators for the given cell line and mode."""
+    def __initialize_gsea_accumulators(
+        self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path,
+    ):
         gene_ids, metadata_by_id, token_id_to_position = \
             self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)
 
@@ -500,15 +530,28 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
                     self.gsea_moa_masks[mode][(cell_line_id, moa)] = \
                         self.__build_pathway_masks(moa_groups, len(gene_ids))
 
+    def ensure_exists(
+        self, mode: str, cell_line_id: str, moa: str, ctrl_gene_expressions_dir: Path
+    ) -> None:
+        """Check if a given mode/cell line accumulator has been encountered;
+        if not, add it.
+        """
+        if cell_line_id not in self.gsea_global_accumulators[mode]:
+            self.__initialize_gsea_accumulators(mode, cell_line_id, ctrl_gene_expressions_dir)
+
+        # assert moa was added to the moa one
+        if (cell_line_id, moa) not in self.gsea_moa_accumulators[mode]:
+            raise ValueError(f"MOA {moa} not found in GSEA MOA results for {cell_line_id}")
+
     def accumulate_influence(
         self,
         mode: str,
+        moa: str,
         cell_line_id: str,
         delta_p,
         delta_avg,
         working_results,
         frac_systematic,
-        moa,
     ) -> None:
         """Accumulate influence."""
         # GSEA accumulation - global

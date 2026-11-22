@@ -517,21 +517,17 @@ class SystematicInfluenceStep(SystematicStep):
         if not np.isfinite(frac_systematic):
             return
 
-        # if encountering new mode/cell line combo, add accumulators for it
-        for handler in [self.gene_influences, self.gsea_influences]:
-            if not handler.exists(mode, cell_line_id):
-                handler.initialize(mode, cell_line_id, self.ctrl_gene_expressions_dir)
-
-        # Gene influence
-        self.gene_influences.accumulate_influence(
-            mode, cell_line_id, delta_p, delta_avg, working_results, frac_systematic
-        )
-
         drug = self.parse_condition(condition)[1].split('|')[0]
         moa = self.drug_to_moa.get(drug, 'unclear')
-        self.gsea_influences.accumulate_influence(
-            mode, cell_line_id, delta_p, delta_avg, working_results, frac_systematic, moa
-        )
+
+        for handler in [self.gene_influences, self.gsea_influences]:
+            # if encountering new mode/cell line combo, add accumulators for it
+            handler.ensure_exists(mode, cell_line_id, moa, self.ctrl_gene_expressions_dir)
+
+            # accumulate influence
+            handler.accumulate_influence(
+                mode, moa, cell_line_id, delta_p, delta_avg, working_results, frac_systematic
+            )
 
     def post_process_cell_line_results(
         self, cell_line_id: str, cell_line_rows: list
