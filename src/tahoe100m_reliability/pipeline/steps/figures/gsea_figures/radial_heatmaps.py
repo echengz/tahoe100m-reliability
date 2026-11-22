@@ -15,7 +15,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.transforms import IdentityTransform
 from pycirclize import Circos
 
-from .config import (
+from .base import (
     GSEAHeatmaps,
     HALLMARK_GROUPINGS,
 )

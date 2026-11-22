@@ -10,7 +10,7 @@ from scipy.stats import linregress, spearmanr
 
 import matplotlib.pyplot as plt
 
-from .config import HALLMARK_GROUPINGS
+from .base import HALLMARK_GROUPINGS
 
 
 class GSEAInfluenceFigures:

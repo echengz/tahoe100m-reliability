@@ -10,7 +10,7 @@ from matplotlib.colors import TwoSlopeNorm
 from matplotlib.cm import ScalarMappable
 from matplotlib.collections import PolyCollection
 
-from .config import (
+from .base import (
     GSEAHeatmaps,
     HALLMARK_GROUPINGS,
     FLAGGED_CELL_LINES,
