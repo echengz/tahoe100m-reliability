@@ -16,7 +16,7 @@ from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
 from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
-from .figures.gsea_figure_helpers import (
+from .figures.gsea_figures import (
     GSEAIndividualHeatmaps,
     GSEAInfluenceFigures,
     GSEARadialHeatmaps,
@@ -24,7 +24,8 @@ from .figures.gsea_figure_helpers import (
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
 from .figures.systematic_figures import (
-    CombinedSystematicFigures,
+    CombinedInfluenceSystematicFigures,
+    InfluenceSystematicFigures,
     SystematicFigures,
 )
 
@@ -135,18 +136,34 @@ class FiguresStep(PipelineStep):
             return
 
         systema_output_dir = self.__output_dir / 'systematic'
-        systema_output_dir.mkdir(parents=True, exist_ok=True)
         organ_by_cell_line = get_organ_by_cell_line()
 
         for mode in ['raw', 'cp10k']:
-            log.info(f"Generating {mode} systema figures...")
+            log.info(f"Generating {mode} systematic figures...")
+
+            # basic systematic figures
             figures = SystematicFigures(
-                self.__systematic_dir, systema_output_dir, mode, organ_by_cell_line
+                self.__systematic_dir,
+                systema_output_dir / 'systematic',
+                mode,
+                organ_by_cell_line,
             )
             figures.generate_figures()
 
+            # influence figures
+            inf_figures = InfluenceSystematicFigures(
+                self.__systematic_dir,
+                systema_output_dir / 'influence',
+                mode,
+                organ_by_cell_line,
+            )
+            inf_figures.generate_figures()
+
         # combined results
-        combined_figures = CombinedSystematicFigures(self.__systematic_dir, systema_output_dir)
+        combined_figures = CombinedInfluenceSystematicFigures(
+            self.__systematic_dir,
+            systema_output_dir / 'influence',
+        )
         combined_figures.generate_figures()
 
     def __generate_gsea_figures(self):
