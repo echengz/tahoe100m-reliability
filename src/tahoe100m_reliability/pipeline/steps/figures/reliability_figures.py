@@ -164,6 +164,7 @@ class ReliabilityFigures:
             zorder=0
         )
         plt.savefig(self.__output_dir / outfile_name)
+        plt.close(fig)
 
 
     def plot_reliability_by_sample_size(self, rel_df: pd.DataFrame, gene_mode: str) -> None:

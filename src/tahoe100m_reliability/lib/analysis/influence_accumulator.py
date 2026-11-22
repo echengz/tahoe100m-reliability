@@ -1,6 +1,8 @@
 """
 Provides a vectorized accumulator for the systematic step to
 accumulate influence scores.
+
+Handles accumulation by gene and GSEA pathways.
 """
 import numpy as np
 import pandas as pd
@@ -8,8 +10,11 @@ import pandas as pd
 from pathlib import Path
 from typing import Any
 
+from tahoe100m_reliability.lib.analysis.compute_systematic import (
+    compute_gene_influences,
+    compute_pathway_influences,
+)
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import load_gene_ids
-
 
 SPECIFICITY_THRESH = 0.5
 
@@ -138,90 +143,28 @@ class InfluenceAccumulator:
 
 class InfluenceAccumulatorHandler:
     """
-    Class to handle the three type of Influence accumulators:
-        gene (gene), GSEA (global, pathway), and GSEA (MOA, pathway)
+    Base class to handles influence accumulators by cell line
     """
-
     def __init__(
         self,
-        gsea_global_shared_axis_hallmark: Path,
-        gsea_moa_shared_axis_hallmark: Path,
         gene_metadata: pd.DataFrame,
         output_dir: Path,
         cur_time: str,
     ) -> None:
         """Initializer."""
+        self.gene_metadata = gene_metadata
         self.output_dir = output_dir
         self.cur_time = cur_time
 
-        # Structures to hold accumulators for each mode and cell line
-        self.gene_accumulators = {'raw': {}, 'cp10k': {}}
-        self.gsea_global_accumulators = {'raw': {}, 'cp10k': {}}
-        self.gsea_moa_accumulators = {'raw': {}, 'cp10k': {}}
+    def initialize_accumulator(self) -> dict:
+        return {'raw': {}, 'cp10k': {}}
 
-        self.gene_metadata = gene_metadata
-
-        # load GSEA data
-        self.gsea_global_df = (
-            pd.read_csv(gsea_global_shared_axis_hallmark)
-            if gsea_global_shared_axis_hallmark
-            else None
-        )
-
-        self.gsea_moa_df = (
-            pd.read_csv(gsea_moa_shared_axis_hallmark)
-            if gsea_moa_shared_axis_hallmark
-            else None
-        )
-
-        # GSEA masks, to mask the specific pathway
-        self.gsea_global_masks = {'raw': {}, 'cp10k': {}}
-        self.gsea_moa_masks = {'raw': {}, 'cp10k': {}}
-
-    def exists(self, mode: str, cell_line_id: str) -> bool:
-        """Check if a given mode/cell line combo has been encountered."""
-        return cell_line_id in self.gene_accumulators[mode]
-
-    def __build_pathway_masks(self, group_ids, n_genes):
-        """Build Boolean pathway-by-gene membership matrix."""
-
-        masks = np.zeros(
-            (len(group_ids), n_genes),
-            dtype=bool,
-        )
-
-        for i, indices in enumerate(group_ids.values()):
-            masks[i, indices] = True
-
-        return masks
-
-    def __build_pathway_groups(self, gsea_df, symbol_to_id):
-        """Map GSEA leading-edge genes to token IDs."""
-
-        group_ids = {}
-
-        for _, row in gsea_df.iterrows():
-            lead_genes = (
-                row['lead_genes'].split(';')
-                if pd.notna(row['lead_genes'])
-                else []
-            )
-
-            indices = [
-                symbol_to_id[gene]
-                for gene in lead_genes
-                if gene in symbol_to_id
-            ]
-
-            if indices:
-                group_ids[row['term']] = indices
-
-        return group_ids
-
-    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path) -> None:
-        """Initialize accumulators for the given cell line and mode."""
-
-        # map gene IDs (integers) to human readable gene names
+    def map_gene_ids(
+        self, cell_line_id: str, ctrl_gene_expressions_dir: Path
+    ) -> tuple[np.array ,pd.DataFrame, dict]:
+        """Map gene IDs (integers) to human readable gene names, and map the
+        token IDs to position to use for vectorized calculations.
+        """
         gene_ids = load_gene_ids(ctrl_gene_expressions_dir, cell_line_id)
         metadata_by_id = self.gene_metadata.set_index('token_id')['gene_symbol']
 
@@ -230,59 +173,9 @@ class InfluenceAccumulatorHandler:
             for i, gene_id in enumerate(gene_ids)
         }
 
-        symbol_to_position = {
-            metadata_by_id.loc[gene_id]: position
-            for gene_id, position in token_id_to_position.items()
-            if gene_id in metadata_by_id.index
-        }
+        return gene_ids, metadata_by_id, token_id_to_position
 
-        # Gene accumulator for this cell line and mode
-        gene_groups = {
-            metadata_by_id.loc[gene_id]: [position]
-            for gene_id, position in token_id_to_position.items()
-            if gene_id in metadata_by_id.index
-        }
-
-        if len(gene_groups) != len(gene_ids):
-            raise ValueError(
-                f"Gene metadata mismatch for {cell_line_id}: "
-                f"{len(gene_groups)} mapped genes, {len(gene_ids)} vector genes"
-            )
-
-        self.gene_accumulators[mode][cell_line_id] = InfluenceAccumulator(gene_groups)
-
-        # Global GSEA accumulator for this cell line and mode
-        if self.gsea_global_df is not None:
-            global_df = self.gsea_global_df[
-                (self.gsea_global_df['cell_line'] == cell_line_id)
-                & (self.gsea_global_df['mode'] == mode)
-            ]
-
-            global_groups = self.__build_pathway_groups(global_df, symbol_to_position)
-            if global_groups:
-                self.gsea_global_accumulators[mode][cell_line_id] = \
-                    InfluenceAccumulator(global_groups)
-
-                self.gsea_global_masks[mode][cell_line_id] = \
-                    self.__build_pathway_masks(global_groups, len(gene_ids))
-
-        # MOA-specific GSEA accumulators for this cell line and mode
-        if self.gsea_moa_df is not None:
-            moa_df = self.gsea_moa_df[
-                (self.gsea_moa_df['cell_line'] == cell_line_id)
-                & (self.gsea_moa_df['mode'] == mode)
-            ]
-
-            for moa, group_df in moa_df.groupby('moa'):
-                moa_groups = self.__build_pathway_groups(group_df, symbol_to_position)
-                if moa_groups:
-                    self.gsea_moa_accumulators[mode][(cell_line_id, moa)] = \
-                        InfluenceAccumulator(moa_groups)
-
-                    self.gsea_moa_masks[mode][(cell_line_id, moa)] = \
-                        self.__build_pathway_masks(moa_groups, len(gene_ids))
-
-    def __summarize_group_influence(self, group_id: str, influence: dict) -> dict:
+    def summarize_group_influence(self, group_id: str, influence: dict) -> dict:
         """Summarize accumulated influence for a gene group."""
         summary = {'group_id': group_id}
 
@@ -308,7 +201,7 @@ class InfluenceAccumulatorHandler:
         summary.update(influence)
         return summary
 
-    def __summarize_accumulation(
+    def summarize_accumulation(
         self,
         influences: dict,
         extra_fields: dict | None = None,
@@ -318,7 +211,7 @@ class InfluenceAccumulatorHandler:
         """Summarize the given accumulation of influences."""
         summary = []
         for group_id, influence in influences.items():
-            row = self.__summarize_group_influence(group_id, influence)
+            row = self.summarize_group_influence(group_id, influence)
             if extra_fields:
                 row.update(extra_fields)
 
@@ -335,16 +228,98 @@ class InfluenceAccumulatorHandler:
 
         return df
 
-    def finalize_gene_influences(
+    def exists(self, mode: str, cell_line_id: str) -> bool:
+        """Check if a given mode/cell line combo has been encountered."""
+        pass
+
+    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path) -> None:
+        """Initialize accumulators for the given cell line and mode."""
+        pass
+
+    def accumulate_influence(
         self,
         mode: str,
-        n_per_cell_line: int = 200,
-        n_per_global: int = 1000,
+        cell_line_id: str,
+        delta_p,
+        delta_avg,
+        working_results,
+        frac_systematic,
     ) -> None:
+        """Accumulate influence"""
+        pass
+
+    def finalize_influence(self, mode: str) -> None:
+        """Finalize influence for this accumulator handler."""
+        pass
+
+
+class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
+    """Class to handle gene influence accumulators by cell line:
+        - gene
+        - gene x MOA
+    """
+    def __init__(
+        self,
+        gene_metadata: pd.DataFrame,
+        output_dir: Path,
+        cur_time: str,
+    ) -> None:
+        super().__init__(gene_metadata, output_dir, cur_time)
+
+        self.gene_accumulators = self.initialize_accumulator()
+        self.gene_moa_accumulators = self.initialize_accumulator()
+
+    def exists(self, mode: str, cell_line_id: str) -> bool:
+        """Check if a given mode/cell line combo has been encountered.
+        Checking just one of the accumulators is enough.
+        """
+        return cell_line_id in self.gene_accumulators[mode]
+
+    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path):
+        """Initialize accumulators for the given cell line and mode."""
+        gene_ids, metadata_by_id, token_id_to_position = \
+            self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)
+
+        # Define gene groups
+        gene_groups = {
+            metadata_by_id.loc[gene_id]: [position]
+            for gene_id, position in token_id_to_position.items()
+            if gene_id in metadata_by_id.index
+        }
+
+        if len(gene_groups) != len(gene_ids):
+            raise ValueError(
+                f"Gene metadata mismatch for {cell_line_id}: "
+                f"{len(gene_groups)} mapped genes, {len(gene_ids)} vector genes"
+            )
+
+        self.gene_accumulators[mode][cell_line_id] = InfluenceAccumulator(gene_groups)
+
+    def accumulate_influence(
+        self,
+        mode: str,
+        cell_line_id: str,
+        delta_p,
+        delta_avg,
+        working_results,
+        frac_systematic,
+    ) -> None:
+        """Accumulate influence."""
+        influences, valid = compute_gene_influences(
+            delta_p, delta_avg, working_results, frac_systematic
+        )
+
+        gene_accumulator = self.gene_accumulators[mode][cell_line_id]
+        gene_accumulator.accumulate(influences, valid, frac_systematic)
+
+    def finalize_influence(self, mode: str) -> None:
         """Finalize by gene for each cell line and across all cell lines.
 
         Since there are a lot of genes, only keep n per cell line and m per global.
         """
+        n_per_cell_line = 200
+        n_per_global = 1000
+
         output_dir = self.output_dir / 'gene_influences'
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -358,7 +333,7 @@ class InfluenceAccumulatorHandler:
                 continue
 
             # summarize influence for this cell line, and 
-            df = self.__summarize_accumulation(
+            df = self.summarize_accumulation(
                 influences,
                 extra_fields={'cell_line_id': cell_line_id},
                 n_groups=n_per_cell_line,
@@ -396,7 +371,7 @@ class InfluenceAccumulatorHandler:
             for influence in global_gene_influences.values():
                 influence['cell_lines'] = sorted(influence['cell_lines'])
 
-            self.__summarize_accumulation(
+            self.summarize_accumulation(
                 global_gene_influences,
                 n_groups=n_per_global,
                 outfile=output_dir / f'systema_{mode}_top{n_per_global}_global_{self.cur_time}.csv'
@@ -405,7 +380,158 @@ class InfluenceAccumulatorHandler:
         # release memory
         self.gene_accumulators[mode].clear()
 
-    def finalize_gsea_influences(self, mode: str) -> None:
+
+class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
+    """Class to handle GSEA pathway influence accumulators by cell line:
+        - global x pathway
+        - MOA x pathway
+    """
+    def __init__(
+        self,
+        gsea_global_shared_axis_hallmark: Path,
+        gsea_moa_shared_axis_hallmark: Path,
+        gene_metadata: pd.DataFrame,
+        output_dir: Path,
+        cur_time: str,
+    ) -> None:
+        super().__init__(gene_metadata, output_dir, cur_time)
+
+        self.gsea_global_accumulators = self.initialize_accumulator()
+        self.gsea_moa_accumulators = self.initialize_accumulator()
+
+        # load GSEA data
+        self.gsea_global_df = (
+            pd.read_csv(gsea_global_shared_axis_hallmark)
+            if gsea_global_shared_axis_hallmark
+            else None
+        )
+
+        self.gsea_moa_df = (
+            pd.read_csv(gsea_moa_shared_axis_hallmark)
+            if gsea_moa_shared_axis_hallmark
+            else None
+        )
+
+        # GSEA masks, to mask the specific pathway
+        self.gsea_global_masks = {'raw': {}, 'cp10k': {}}
+        self.gsea_moa_masks = {'raw': {}, 'cp10k': {}}
+
+    def __build_pathway_masks(self, group_ids, n_genes):
+        """Build Boolean pathway-by-gene membership matrix."""
+
+        masks = np.zeros(
+            (len(group_ids), n_genes),
+            dtype=bool,
+        )
+
+        for i, indices in enumerate(group_ids.values()):
+            masks[i, indices] = True
+
+        return masks
+
+    def __build_pathway_groups(self, gsea_df, symbol_to_id):
+        """Map GSEA leading-edge genes to token IDs."""
+
+        group_ids = {}
+
+        for _, row in gsea_df.iterrows():
+            lead_genes = (
+                row['lead_genes'].split(';')
+                if pd.notna(row['lead_genes'])
+                else []
+            )
+
+            indices = [
+                symbol_to_id[gene]
+                for gene in lead_genes
+                if gene in symbol_to_id
+            ]
+
+            if indices:
+                group_ids[row['term']] = indices
+
+        return group_ids
+
+    def exists(self, mode: str, cell_line_id: str) -> bool:
+        """Check if a given mode/cell line combo has been encountered.
+        Checking just one of the accumulators is enough.
+        """
+        return cell_line_id in self.gsea_global_accumulators[mode]
+
+    def initialize(self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path):
+        """Initialize accumulators for the given cell line and mode."""
+        gene_ids, metadata_by_id, token_id_to_position = \
+            self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)
+
+        symbol_to_position = {
+            metadata_by_id.loc[gene_id]: position
+            for gene_id, position in token_id_to_position.items()
+            if gene_id in metadata_by_id.index
+        }
+
+        # Global GSEA accumulator for this cell line and mode
+        if self.gsea_global_df is not None:
+            global_df = self.gsea_global_df[
+                (self.gsea_global_df['cell_line'] == cell_line_id)
+                & (self.gsea_global_df['mode'] == mode)
+            ]
+
+            global_groups = self.__build_pathway_groups(global_df, symbol_to_position)
+            if global_groups:
+                self.gsea_global_accumulators[mode][cell_line_id] = \
+                    InfluenceAccumulator(global_groups)
+
+                self.gsea_global_masks[mode][cell_line_id] = \
+                    self.__build_pathway_masks(global_groups, len(gene_ids))
+
+        # MOA-specific GSEA accumulators for this cell line and mode
+        if self.gsea_moa_df is not None:
+            moa_df = self.gsea_moa_df[
+                (self.gsea_moa_df['cell_line'] == cell_line_id)
+                & (self.gsea_moa_df['mode'] == mode)
+            ]
+
+            for moa, group_df in moa_df.groupby('moa'):
+                moa_groups = self.__build_pathway_groups(group_df, symbol_to_position)
+                if moa_groups:
+                    self.gsea_moa_accumulators[mode][(cell_line_id, moa)] = \
+                        InfluenceAccumulator(moa_groups)
+
+                    self.gsea_moa_masks[mode][(cell_line_id, moa)] = \
+                        self.__build_pathway_masks(moa_groups, len(gene_ids))
+
+    def accumulate_influence(
+        self,
+        mode: str,
+        cell_line_id: str,
+        delta_p,
+        delta_avg,
+        working_results,
+        frac_systematic,
+        moa,
+    ) -> None:
+        """Accumulate influence."""
+        # GSEA accumulation - global
+        gsea_global_accumulator = self.gsea_global_accumulators[mode].get(cell_line_id)
+        if gsea_global_accumulator is not None:
+            pathway_masks = self.gsea_global_masks[mode][cell_line_id]
+
+            influences, valid = compute_pathway_influences(
+                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
+            )
+            gsea_global_accumulator.accumulate(influences, valid, frac_systematic)
+
+        # GSEA accumulation - MOA
+        gsea_moa_accumulator = self.gsea_moa_accumulators[mode].get((cell_line_id, moa))
+        if gsea_moa_accumulator is not None:
+            pathway_masks = self.gsea_moa_masks[mode][(cell_line_id, moa)]
+
+            influences, valid = compute_pathway_influences(
+                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
+            )
+            gsea_moa_accumulator.accumulate(influences, valid, frac_systematic)
+
+    def finalize_influence(self, mode: str) -> None:
         """Finalize and clean up accumulators for the given cell line and mode for
         GSEA terms. Since not many pathways in the grand scheme of things, keep all
         of them.
@@ -420,7 +546,7 @@ class InfluenceAccumulatorHandler:
             if not influences:
                 continue
 
-            df = self.__summarize_accumulation(
+            df = self.summarize_accumulation(
                 influences,
                 extra_fields={'cell_line_id': cell_line_id}
             )
@@ -438,7 +564,7 @@ class InfluenceAccumulatorHandler:
             if not influences:
                 continue
 
-            df = self.__summarize_accumulation(
+            df = self.summarize_accumulation(
                 influences,
                 extra_fields={'cell_line_id': cell_line_id, 'moa': moa},
             )

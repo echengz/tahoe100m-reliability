@@ -90,6 +90,7 @@ class PreprocessFigures:
         ax.set_title(f"Number of parquet shards per drug/dosage (avg = {avg_shards:.3f})")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'parquet_per_drug_dosage.png')
+        plt.close(fig)
 
     def __generate_unique_perturbations_per_shard(self) -> None:
         """2. For each parquet shard, how many unique drug x dosage
@@ -134,6 +135,7 @@ class PreprocessFigures:
         ax.set_title(f"Number of unique drug x dosage perturbations per parquet shard (avg = {avg_drugs:.3f})")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_dosage_per_parquet.png')
+        plt.close(fig)
 
     def __generate_perturbation_heatmaps(self, figsize=(9, 9)) -> None:
         """3. Generate heatmaps of the perturbation spread."""
@@ -182,6 +184,7 @@ class PreprocessFigures:
         ax.set_ylabel("Drug x dosage (perturbation)")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_dosage_distribution.png')
+        plt.close(fig)
 
         # Add precomputed cluster assignments
         df = df.merge(
@@ -257,6 +260,7 @@ class PreprocessFigures:
         ax.set_ylabel("Drug x dosage (perturbation)")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_dosage_distribution_clustered.png')
+        plt.close(fig)
 
         # color heatmap by dosage
         # Map dosage -> integer
@@ -310,6 +314,7 @@ class PreprocessFigures:
         ax.set_ylabel("Drug x dosage (perturbation)")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'dosage_distribution.png')
+        plt.close(fig)
 
         # color heatmap by drug
         fig, ax = plt.subplots(figsize=figsize)
@@ -347,6 +352,7 @@ class PreprocessFigures:
         ax.set_ylabel("Drug x dosage (perturbation)")
         plt.tight_layout()
         plt.savefig(self.__output_dir / 'drug_distribution.png')
+        plt.close(fig)
 
     def generate_figures(self) -> None:
         """

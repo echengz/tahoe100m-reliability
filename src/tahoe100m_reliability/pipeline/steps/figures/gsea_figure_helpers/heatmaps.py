@@ -400,6 +400,7 @@ class GSEAIndividualHeatmaps(GSEAHeatmaps):
         )
 
         fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
 
     def plot_heatmaps(
         self, gsea_df: pd.DataFrame, filename_prefix: str, title_postfix: str,

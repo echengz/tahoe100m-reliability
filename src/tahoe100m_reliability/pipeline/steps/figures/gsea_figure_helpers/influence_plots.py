@@ -257,6 +257,7 @@ class GSEAInfluenceFigures:
         fig.savefig(
             self.__output_dir / filename, bbox_inches="tight", dpi=300,
         )
+        plt.close(fig)
 
     def __add_axis_legend(
         self,
@@ -389,6 +390,7 @@ class GSEAInfluenceFigures:
             fig.savefig(
                 self.__output_dir / filename, bbox_inches="tight", dpi=300,
             )
+            plt.close(fig)
 
     def generate_figures(
         self, 

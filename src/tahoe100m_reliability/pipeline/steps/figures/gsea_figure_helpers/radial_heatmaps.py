@@ -636,3 +636,4 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
             bbox_inches="tight",
             facecolor="white",
         )
+        plt.close(fig)

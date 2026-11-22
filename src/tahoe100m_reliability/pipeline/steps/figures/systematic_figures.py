@@ -117,6 +117,7 @@ class SystematicFigures(BaseSystematicFigures):
             dpi=300,
             bbox_inches="tight",
         )
+        plt.close(fig)
 
     def __plot_drug_x_dosage_specificity(self, df: pd.DataFrame) -> None:
         """Plot stacked specificity fractions grouped by drug and dosage."""
@@ -183,6 +184,7 @@ class SystematicFigures(BaseSystematicFigures):
             dpi=300,
             bbox_inches="tight",
         )
+        plt.close(fig)
 
     def plot_grouped_systematic(self):
         """Plot the specificities grouped by drug, drug x dosage, and cell line ID.""" 
@@ -256,6 +258,7 @@ class SystematicFigures(BaseSystematicFigures):
                 dpi=300,
                 bbox_inches="tight",
             )
+            plt.close(fig)
 
     def __get_top_genes(
         self, level: str, top_n: int, ranking_col: str = 'total_influence_abs'
@@ -263,6 +266,9 @@ class SystematicFigures(BaseSystematicFigures):
         """Get the top genes df the level, ranked based on the
         given ranking column.
         """
+        # go other way if ranking a column that counts negative values
+        ascending = 'negative' in ranking_col
+
         if level == 'global':
             # Get top genes at the global level
             df = self.grab_latest_systema_results(
@@ -272,7 +278,7 @@ class SystematicFigures(BaseSystematicFigures):
             # Select top N genes based on global influence
             top_genes_df = (
                 df
-                .sort_values(ranking_col, ascending=False)
+                .sort_values(ranking_col, ascending=ascending)
                 .drop_duplicates('group_id')
                 .head(top_n)
                 .copy()
@@ -286,7 +292,7 @@ class SystematicFigures(BaseSystematicFigures):
 
             top_genes_df = (
                 df.dropna(subset=['cell_line_id', ranking_col, 'group_id'])
-                .sort_values(ranking_col, ascending=False)
+                .sort_values(ranking_col, ascending=ascending)
                 .groupby('cell_line_id', sort=False)
                 .head(top_n)
                 .copy()
@@ -295,7 +301,7 @@ class SystematicFigures(BaseSystematicFigures):
             # Assign within-cell-line ranks
             top_genes_df['rank'] = (
                 top_genes_df.groupby('cell_line_id')[ranking_col]
-                .rank(method='first', ascending=False)
+                .rank(method='first', ascending=ascending)
                 .astype(int)
             )
         else:
@@ -452,15 +458,21 @@ class SystematicFigures(BaseSystematicFigures):
             dpi=300,
             bbox_inches='tight'
         )
+        plt.close(fig)
 
     def plot_cell_line_gene_rank_heatmap(
-        self, top_n: int = 5, label_organs: bool = False
+        self,
+        top_n: int = 5,
+        ranking_col: str = 'total_influence_abs',
+        label_organs: bool = True,
     ):
         """Plot a rank-based heatmap of the top N influential genes
         selected independently within each cell line.
         """
         group = 'cell_line_id'
-        top_genes_df = self.__get_top_genes(level=group, top_n=top_n)
+        top_genes_df = self.__get_top_genes(
+            level=group, top_n=top_n, ranking_col=ranking_col
+        )
 
         # Count number of cell lines in which each gene appears
         gene_counts = top_genes_df.groupby('group_id')[group].nunique()
@@ -540,7 +552,7 @@ class SystematicFigures(BaseSystematicFigures):
             linewidths=0.4,
             linecolor='lightgrey',
             cbar_kws={
-                'label': 'Rank (1 = highest influence)',
+                'label': 'Rank (1 = highest)',
                 'ticks': range(1, top_n + 1)
             },
             ax=ax
@@ -567,7 +579,7 @@ class SystematicFigures(BaseSystematicFigures):
         ax.tick_params(axis='x', rotation=90)
 
         ax.set_title(
-            f'Top {top_n} Influential Genes Across Cell Lines ({self.mode})',
+            f'Top {top_n} Influential Genes Across Cell Lines ({self.mode}, by {ranking_col})',
             fontsize=14,
             pad=15,
             fontweight='bold'
@@ -600,7 +612,7 @@ class SystematicFigures(BaseSystematicFigures):
                 handles=legend_handles,
                 title='Organ groups',
                 loc='upper center',
-                bbox_to_anchor=(0.5, -0.14),
+                bbox_to_anchor=(0.5, -0.18),
                 ncol=7,
                 frameon=False
             )
@@ -619,10 +631,11 @@ class SystematicFigures(BaseSystematicFigures):
 
         plt.savefig(
             self.output_dir /
-            f'systema_{self.mode}_gene_rank_heatmap.png',
+            f'systema_{self.mode}_gene_rank_heatmap_{ranking_col}.png',
             dpi=300,
             bbox_inches='tight'
         )
+        plt.close(fig)
 
 
     def generate_figures(self) -> None:
@@ -632,7 +645,9 @@ class SystematicFigures(BaseSystematicFigures):
 
         # Influence results
         self.plot_top_influential_genes()
-        self.plot_cell_line_gene_rank_heatmap()
+        self.plot_cell_line_gene_rank_heatmap(ranking_col='total_influence_abs')
+        self.plot_cell_line_gene_rank_heatmap(ranking_col='positive_influence')
+        self.plot_cell_line_gene_rank_heatmap(ranking_col='negative_influence')
 
 
 class CombinedSystematicFigures(BaseSystematicFigures):
@@ -752,6 +767,7 @@ class CombinedSystematicFigures(BaseSystematicFigures):
         fig.savefig(
             self.output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight"
         )
+        plt.close(fig)
 
     def generate_figures(self) -> None:
         # Create combined DF

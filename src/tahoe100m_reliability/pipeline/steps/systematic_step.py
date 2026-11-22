@@ -16,11 +16,10 @@ from tqdm import tqdm
 from typing import Any
 
 from tahoe100m_reliability.lib.analysis.influence_accumulator import (
-    InfluenceAccumulatorHandler,
+    GeneInfluenceAccumulatorHandler,
+    GSEAInfluenceAccumulatorHandler,
 )
 from tahoe100m_reliability.lib.analysis.compute_systematic import (
-    compute_gene_influences,
-    compute_pathway_influences,
     score_perturbation,
 )
 
@@ -456,7 +455,13 @@ class SystematicInfluenceStep(SystematicStep):
 
         self.drug_to_moa = self.load_drug_moa_mapping()
 
-        self.influence_accumulator = InfluenceAccumulatorHandler(
+        self.gene_influences = GeneInfluenceAccumulatorHandler(
+            self.gene_metadata,
+            self.output_dir,
+            self.cur_time,
+        )
+
+        self.gsea_influences = GSEAInfluenceAccumulatorHandler(
             gsea_global_shared_axis_hallmark,
             gsea_moa_shared_axis_hallmark,
             self.gene_metadata,
@@ -507,46 +512,26 @@ class SystematicInfluenceStep(SystematicStep):
         working_results,
     ) -> None:
         """Post process perturbation score - computes gene accumulator."""
-
         # gene accumulation; make sure this is a reliable/finate condition
         frac_systematic = score_results['frac_systematic_var']
         if not np.isfinite(frac_systematic):
             return
 
         # if encountering new mode/cell line combo, add accumulators for it
-        if not self.influence_accumulator.exists(mode, cell_line_id):
-            self.influence_accumulator.initialize(mode, cell_line_id, self.ctrl_gene_expressions_dir)
+        for handler in [self.gene_influences, self.gsea_influences]:
+            if not handler.exists(mode, cell_line_id):
+                handler.initialize(mode, cell_line_id, self.ctrl_gene_expressions_dir)
 
         # Gene influence
-        influences, valid = compute_gene_influences(
-            delta_p, delta_avg, working_results, frac_systematic
+        self.gene_influences.accumulate_influence(
+            mode, cell_line_id, delta_p, delta_avg, working_results, frac_systematic
         )
 
-        gene_accumulator = self.influence_accumulator.gene_accumulators[mode][cell_line_id]
-        gene_accumulator.accumulate(influences, valid, frac_systematic)
-
-        # GSEA accumulation - global
-        gsea_global_accumulator = self.influence_accumulator.gsea_global_accumulators[mode].get(cell_line_id)
-        if gsea_global_accumulator is not None:
-            pathway_masks = self.influence_accumulator.gsea_global_masks[mode][cell_line_id]
-
-            influences, valid = compute_pathway_influences(
-                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
-            )
-            gsea_global_accumulator.accumulate(influences, valid, frac_systematic)
-
-        # GSEA accumulation - MOA
         drug = self.parse_condition(condition)[1].split('|')[0]
         moa = self.drug_to_moa.get(drug, 'unclear')
-        gsea_moa_accumulator = self.influence_accumulator.gsea_moa_accumulators[mode].get((cell_line_id, moa))
-
-        if gsea_moa_accumulator is not None:
-            pathway_masks = self.influence_accumulator.gsea_moa_masks[mode][(cell_line_id, moa)]
-
-            influences, valid = compute_pathway_influences(
-                pathway_masks, delta_p, delta_avg, working_results, frac_systematic
-            )
-            gsea_moa_accumulator.accumulate(influences, valid, frac_systematic)
+        self.gsea_influences.accumulate_influence(
+            mode, cell_line_id, delta_p, delta_avg, working_results, frac_systematic, moa
+        )
 
     def post_process_cell_line_results(
         self, cell_line_id: str, cell_line_rows: list
@@ -738,5 +723,5 @@ class SystematicInfluenceStep(SystematicStep):
         self.__summarize_merged_results(mode, ds_name, merged_df)
 
         # summarize influence scores
-        self.influence_accumulator.finalize_gene_influences(mode)
-        self.influence_accumulator.finalize_gsea_influences(mode)
+        self.gene_influences.finalize_influence(mode)
+        self.gsea_influences.finalize_influence(mode)
