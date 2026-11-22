@@ -326,10 +326,19 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
         output_dir = self.output_dir / 'gene_influences'
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # to aggregate influence across all cell lines
+        # aggregate influence across different groupings
         global_gene_influences = {}
         cell_line_influences = {}
+        moa_influences = {}
+
         top_genes_by_cell_line_moa = []
+
+        def __set_gene(influence, include_cell_line: bool = True):
+            result = {key: 0 for key in influence}
+            if include_cell_line:
+                result['cell_lines'] = set()
+
+            return result
 
         for (cell_line_id, moa), accumulator in self.gene_accumulators[mode].items():
             influences = accumulator.get_accumulation()
@@ -344,35 +353,64 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             )
             top_genes_by_cell_line_moa.append(df)
 
-            # aggregate influence globally and by cell line
+            # aggregate influences by group
             if cell_line_id not in cell_line_influences:
                 cell_line_influences[cell_line_id] = {}
+            if moa not in moa_influences:
+                moa_influences[moa] = {}
 
-            # aggregate influence globally and by cell line
             for gene_id, influence in influences.items():
                 if gene_id not in cell_line_influences[cell_line_id]:
-                    cell_line_influences[cell_line_id][gene_id] = {
-                        key: 0
-                        for key in influence
-                    }
+                    cell_line_influences[cell_line_id][gene_id] = \
+                        __set_gene(influence, include_cell_line=False)
+
+                if gene_id not in moa_influences[moa]:
+                    moa_influences[moa][gene_id] = __set_gene(influence)
 
                 if gene_id not in global_gene_influences:
-                    global_gene_influences[gene_id] = {
-                        key: 0
-                        for key in influence
-                    }
-                    # keep track of which cell lines had the given gene
-                    global_gene_influences[gene_id]['cell_lines'] = set()
+                    global_gene_influences[gene_id] = __set_gene(influence)
 
                 cell_line_gene = cell_line_influences[cell_line_id][gene_id]
+                moa_gene = moa_influences[moa][gene_id]
                 global_gene = global_gene_influences[gene_id]
+
+                moa_gene['cell_lines'].add(cell_line_id)
                 global_gene['cell_lines'].add(cell_line_id)
 
                 for key, value in influence.items():
                     cell_line_gene[key] += value
+                    moa_gene[key] += value
                     global_gene[key] += value
 
-        # save results
+        # Save results
+        def __aggregate(group_name: str, grouped_influences: dict, has_cell_lines: bool):
+            top_genes = []
+            for group, gene_influences in grouped_influences.items():
+                if has_cell_lines:
+                    for influence in gene_influences.values():
+                        influence['cell_lines'] = sorted(influence['cell_lines'])
+
+                df = self.summarize_accumulation(
+                    gene_influences,
+                    extra_fields={group_name: group},
+                    n_groups=n_per_group
+                )
+                top_genes.append(df)
+
+            top_genes_df = pd.concat(top_genes, ignore_index=True)
+            top_genes_df.to_csv(
+                output_dir / f'systema_{mode}_top{n_per_group}_by_{group_name}_{self.cur_time}.csv',
+                index=False
+            )
+
+        if cell_line_influences:
+            __aggregate('cell_line_id', cell_line_influences, False)
+            del cell_line_influences
+
+        if moa_influences:
+            __aggregate('moa', moa_influences, True)
+            del moa_influences
+
         if top_genes_by_cell_line_moa:
             top_genes_by_cell_line_moa_df = pd.concat(top_genes_by_cell_line_moa, ignore_index=True)
             top_genes_by_cell_line_moa_df.to_csv(
@@ -380,26 +418,6 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
                 index=False
             )
             del top_genes_by_cell_line_moa, top_genes_by_cell_line_moa_df
-
-        if cell_line_influences:
-            top_genes_by_cell_line = []
-
-            for cell_line_id, gene_influences in cell_line_influences.items():
-                df = self.summarize_accumulation(
-                    gene_influences,
-                    extra_fields={'cell_line_id': cell_line_id},
-                    n_groups=n_per_group,
-                )
-                top_genes_by_cell_line.append(df)
-
-            del cell_line_influences
-
-            top_genes_by_cell_line_df = pd.concat(top_genes_by_cell_line, ignore_index=True)
-            top_genes_by_cell_line_df.to_csv(
-                output_dir / f'systema_{mode}_top{n_per_group}_by_cell_line_{self.cur_time}.csv',
-                index=False
-            )
-            del top_genes_by_cell_line_df
 
         if global_gene_influences:
             for influence in global_gene_influences.values():
