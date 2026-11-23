@@ -16,12 +16,15 @@ from .pipeline_step import PipelineStep
 class DeltaPMode:
     """Handles what type of delta_p results we have"""
 
-    def __init__(self, reliability_dir: Path | None, delta_p_dir: Path | None) -> None:
+    def __init__(self, reliability_dir: Path | None, delta_p_dir_name: str) -> None:
         """Initializer. If reliability directory exists, so must delta_p directory."""
-
+        delta_p_dir = None
         if reliability_dir:
             if not reliability_dir.is_dir():
                 raise FileNotFoundError(f"Cannot find reliability directory: {reliability_dir}")
+
+            delta_p_dir = reliability_dir / delta_p_dir_name
+
             if not delta_p_dir:
                 raise FileNotFoundError(f"delta_p_dir not provided when reliability_dir was")
             if not delta_p_dir.is_dir():
@@ -53,13 +56,13 @@ class BaseSystematicStep(PipelineStep):
         # we renamed the directories, so try both
         try:
             self.mode_mapping = {
-                'raw': DeltaPMode(reliability_dir, reliability_dir / 'delta_p_raw'),
-                'cp10k': DeltaPMode(reliability_cp10k_dir, reliability_cp10k_dir / 'delta_p_cp10k')
+                'raw': DeltaPMode(reliability_dir, 'delta_p_raw'),
+                'cp10k': DeltaPMode(reliability_cp10k_dir, 'delta_p_cp10k')
             }
         except FileNotFoundError:
             self.mode_mapping = {
-                'raw': DeltaPMode(reliability_dir, reliability_dir / 'systema'),
-                'cp10k': DeltaPMode(reliability_cp10k_dir, reliability_cp10k_dir / 'systema_cp10k')
+                'raw': DeltaPMode(reliability_dir, 'systema'),
+                'cp10k': DeltaPMode(reliability_cp10k_dir, 'systema_cp10k')
             }
 
         self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir

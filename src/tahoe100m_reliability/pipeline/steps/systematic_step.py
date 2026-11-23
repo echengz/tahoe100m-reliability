@@ -446,8 +446,7 @@ class SystematicInfluenceStep(SystematicStep):
 
     def __init__(
         self,
-        gsea_global_shared_axis_hallmark: Path | None = None,
-        gsea_moa_shared_axis_hallmark: Path | None = None,
+        gsea_dir: Path | None = None,
         **kwargs,
     ) -> None:
         """Initializer."""
@@ -462,8 +461,7 @@ class SystematicInfluenceStep(SystematicStep):
         )
 
         self.gsea_influences = GSEAInfluenceAccumulatorHandler(
-            gsea_global_shared_axis_hallmark,
-            gsea_moa_shared_axis_hallmark,
+            gsea_dir,
             self.gene_metadata,
             self.output_dir,
             self.cur_time,
@@ -480,14 +478,9 @@ class SystematicInfluenceStep(SystematicStep):
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
-            '--gsea-global-shared-axis-hallmark', dest='gsea_global_shared_axis_hallmark', type=Path,
-            help='Path to the GSEA global shared axis results. If provided, will add influence scores '
-                 + 'to the corresponding lead genes'
-        )
-        parser.add_argument(
-            '--gsea-moa-shared-axis-hallmark', dest='gsea_moa_shared_axis_hallmark', type=Path,
-            help='Path to the GSEA MOA shared axis results. If provided, will add influence scores '
-                 + 'to the corresponding lead genes'
+            '--gsea-dir', dest='gsea_dir', type=Path,
+            help='Path to directory containing GSEA results. If provided, will add influence '
+                 + 'scores to the corresponding lead genes'
         )
 
     def parse_condition(self, condition: str) -> tuple[str, str]:

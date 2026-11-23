@@ -186,10 +186,15 @@ class FiguresStep(PipelineStep):
             organ_by_cell_line=organ_by_cell_line,
         )
 
-        # plot everything individually, and also by grouped MOAs
+        # Shared axis
+        # Plot everything individually, and also by grouped MOAs
         for axis in ['global', 'moa']:
             # load GSEA results and fix Pperoxisome typo
-            df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
+            df1 = pd.read_csv(self.__gsea_dir / f"raw_{axis}_shared_axis_hallmark_gsea.csv")
+            df2 = pd.read_csv(self.__gsea_dir / f"cp10k_{axis}_shared_axis_hallmark_gsea.csv")
+            df = pd.concat([df1, df2], ignore_index=True)
+            del df1, df2
+
             df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
 
             if axis == 'global':

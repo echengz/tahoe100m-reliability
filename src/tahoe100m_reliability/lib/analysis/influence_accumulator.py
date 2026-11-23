@@ -156,8 +156,8 @@ class InfluenceAccumulatorHandler:
         self.output_dir = output_dir
         self.cur_time = cur_time
 
-    def set_up_accumulators_by_mode(self) -> dict:
-        """Set up accumulators by mode."""
+    def create_mode_dict(self) -> dict:
+        """Set up a simple mode dict."""
         return {'raw': {}, 'cp10k': {}}
 
     def map_gene_ids(
@@ -267,7 +267,7 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         # Just use one set of accumulators because the MOA ones can be aggregated
         # to get the cell line and global ones
-        self.gene_accumulators = self.set_up_accumulators_by_mode()
+        self.gene_accumulators = self.create_mode_dict()
 
     def ensure_exists(
         self, mode: str, cell_line_id: str, moa: str, ctrl_gene_expressions_dir: Path
@@ -436,38 +436,41 @@ class GeneInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
 class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
     """Class to handle GSEA pathway influence accumulation by cell line:
-        - global x pathway
-        - MOA x pathway
+        - shared global x pathway
+        - shared MOA x pathway
+        - specific condition (in this case we do not actually need to accumulate)
     """
     def __init__(
         self,
-        gsea_global_shared_axis_hallmark: Path,
-        gsea_moa_shared_axis_hallmark: Path,
+        gsea_dir: Path,
         gene_metadata: pd.DataFrame,
         output_dir: Path,
         cur_time: str,
     ) -> None:
         super().__init__(gene_metadata, output_dir, cur_time)
-
-        self.gsea_global_accumulators = self.set_up_accumulators_by_mode()
-        self.gsea_moa_accumulators = self.set_up_accumulators_by_mode()
+        # accumulators
+        self.global_shared_accumulators = self.create_mode_dict()
+        self.moa_shared_accumulators = self.create_mode_dict()
 
         # load GSEA data
-        self.gsea_global_df = (
-            pd.read_csv(gsea_global_shared_axis_hallmark)
-            if gsea_global_shared_axis_hallmark
-            else None
-        )
-
-        self.gsea_moa_df = (
-            pd.read_csv(gsea_moa_shared_axis_hallmark)
-            if gsea_moa_shared_axis_hallmark
-            else None
-        )
+        self.global_shared_df = self.__combine_gsea_modes(gsea_dir, 'global_shared')
+        self.moa_shared_df = self.__combine_gsea_modes(gsea_dir, 'moa_shared')
+        self.global_specific_df = self.__combine_gsea_modes(gsea_dir, 'global_specific')
 
         # GSEA masks, to mask the specific pathway
-        self.gsea_global_masks = {'raw': {}, 'cp10k': {}}
-        self.gsea_moa_masks = {'raw': {}, 'cp10k': {}}
+        self.global_shared_masks = self.create_mode_dict()
+        self.moa_shared_masks = self.create_mode_dict()
+
+    def __combine_gsea_modes(self, gsea_dir: Path, axis: str) -> pd.DataFrame:
+        """Combine the raw/CP10K results as needed."""
+        raw_file = gsea_dir / f"raw_{axis}_axis_hallmark_gsea.csv"
+        cp10k_file = gsea_dir / f"cp10k_{axis}_axis_hallmark_gsea.csv"
+
+        df1 = pd.read_csv(raw_file) if raw_file.is_file() else None
+        df2 = pd.read_csv(cp10k_file) if cp10k_file.is_file() else None
+        dfs = [df for df in [df1, df2]]
+
+        return pd.concat(dfs, ignore_index=True) if dfs else None
 
     def __build_pathway_masks(self, group_ids, n_genes):
         """Build Boolean pathway-by-gene membership matrix."""
@@ -506,7 +509,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
         return group_ids
 
     def __initialize_gsea_accumulators(
-        self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path,
+        self, mode: str, cell_line_id: str, condition: str, ctrl_gene_expressions_dir: Path,
     ):
         gene_ids, metadata_by_id, token_id_to_position = \
             self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)
@@ -517,36 +520,38 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             if gene_id in metadata_by_id.index
         }
 
-        # Global GSEA accumulator for this cell line and mode
-        if self.gsea_global_df is not None:
-            global_df = self.gsea_global_df[
-                (self.gsea_global_df['cell_line'] == cell_line_id)
-                & (self.gsea_global_df['mode'] == mode)
+        # Global GSEA shared accumulators for this cell line and mode
+        if self.global_shared_df is not None:
+            global_df = self.global_shared_df[
+                (self.global_shared_df['cell_line'] == cell_line_id)
+                & (self.global_shared_df['mode'] == mode)
             ]
 
-            global_groups = self.__build_pathway_groups(global_df, symbol_to_position)
-            if global_groups:
-                self.gsea_global_accumulators[mode][cell_line_id] = \
-                    InfluenceAccumulator(global_groups)
+            if not global_df.empty:
+                global_groups = self.__build_pathway_groups(global_df, symbol_to_position)
+                if global_groups:
+                    self.global_shared_accumulators[mode][cell_line_id] = \
+                        InfluenceAccumulator(global_groups)
 
-                self.gsea_global_masks[mode][cell_line_id] = \
-                    self.__build_pathway_masks(global_groups, len(gene_ids))
+                    self.global_shared_masks[mode][cell_line_id] = \
+                        self.__build_pathway_masks(global_groups, len(gene_ids))
 
-        # MOA-specific GSEA accumulators for this cell line and mode
-        if self.gsea_moa_df is not None:
-            moa_df = self.gsea_moa_df[
-                (self.gsea_moa_df['cell_line'] == cell_line_id)
-                & (self.gsea_moa_df['mode'] == mode)
+        # MOA-specific shared GSEA accumulators for this cell line and mode
+        if self.moa_shared_df is not None:
+            moa_df = self.moa_shared_df[
+                (self.moa_shared_df['cell_line'] == cell_line_id)
+                & (self.moa_shared_df['mode'] == mode)
             ]
 
-            for moa, group_df in moa_df.groupby('moa'):
-                moa_groups = self.__build_pathway_groups(group_df, symbol_to_position)
-                if moa_groups:
-                    self.gsea_moa_accumulators[mode][(cell_line_id, moa)] = \
-                        InfluenceAccumulator(moa_groups)
+            if not moa_df.empty:
+                for moa, group_df in moa_df.groupby('moa'):
+                    moa_groups = self.__build_pathway_groups(group_df, symbol_to_position)
+                    if moa_groups:
+                        self.moa_shared_accumulators[mode][(cell_line_id, moa)] = \
+                            InfluenceAccumulator(moa_groups)
 
-                    self.gsea_moa_masks[mode][(cell_line_id, moa)] = \
-                        self.__build_pathway_masks(moa_groups, len(gene_ids))
+                        self.moa_shared_masks[mode][(cell_line_id, moa)] = \
+                            self.__build_pathway_masks(moa_groups, len(gene_ids))
 
     def ensure_exists(
         self, mode: str, cell_line_id: str, moa: str, ctrl_gene_expressions_dir: Path
@@ -554,11 +559,11 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
         """Check if a given mode/cell line accumulator has been encountered;
         if not, add it.
         """
-        if cell_line_id not in self.gsea_global_accumulators[mode]:
+        if cell_line_id not in self.global_shared_accumulators[mode]:
             self.__initialize_gsea_accumulators(mode, cell_line_id, ctrl_gene_expressions_dir)
 
         # assert moa was added to the moa one
-        if (cell_line_id, moa) not in self.gsea_moa_accumulators[mode]:
+        if (cell_line_id, moa) not in self.moa_shared_accumulators[mode]:
             raise ValueError(f"MOA {moa} not found in GSEA MOA results for {cell_line_id}")
 
     def accumulate_influence(
@@ -573,9 +578,9 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
     ) -> None:
         """Accumulate influence."""
         # GSEA accumulation - global
-        gsea_global_accumulator = self.gsea_global_accumulators[mode].get(cell_line_id)
+        gsea_global_accumulator = self.global_shared_accumulators[mode].get(cell_line_id)
         if gsea_global_accumulator is not None:
-            pathway_masks = self.gsea_global_masks[mode][cell_line_id]
+            pathway_masks = self.global_shared_masks[mode][cell_line_id]
 
             influences, valid = compute_pathway_influences(
                 pathway_masks, delta_p, delta_avg, working_results, frac_systematic
@@ -583,9 +588,9 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             gsea_global_accumulator.accumulate(influences, valid, frac_systematic)
 
         # GSEA accumulation - MOA
-        gsea_moa_accumulator = self.gsea_moa_accumulators[mode].get((cell_line_id, moa))
+        gsea_moa_accumulator = self.moa_shared_accumulators[mode].get((cell_line_id, moa))
         if gsea_moa_accumulator is not None:
-            pathway_masks = self.gsea_moa_masks[mode][(cell_line_id, moa)]
+            pathway_masks = self.moa_shared_masks[mode][(cell_line_id, moa)]
 
             influences, valid = compute_pathway_influences(
                 pathway_masks, delta_p, delta_avg, working_results, frac_systematic
@@ -602,7 +607,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         # by GSEA global
         global_rows = []
-        for cell_line_id, accumulator in self.gsea_global_accumulators[mode].items():
+        for cell_line_id, accumulator in self.global_shared_accumulators[mode].items():
             influences = accumulator.get_accumulation()
             if not influences:
                 continue
@@ -620,7 +625,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             )
 
         moa_rows = []
-        for (cell_line_id, moa), accumulator in self.gsea_moa_accumulators[mode].items():
+        for (cell_line_id, moa), accumulator in self.moa_shared_accumulators[mode].items():
             influences = accumulator.get_accumulation()
             if not influences:
                 continue
@@ -639,7 +644,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             )
 
         # release memory
-        self.gsea_global_accumulators[mode].clear()
-        self.gsea_moa_accumulators[mode].clear()
-        self.gsea_global_masks[mode].clear()
-        self.gsea_moa_masks[mode].clear()
+        self.global_shared_accumulators[mode].clear()
+        self.moa_shared_accumulators[mode].clear()
+        self.global_shared_masks[mode].clear()
+        self.moa_shared_masks[mode].clear()
