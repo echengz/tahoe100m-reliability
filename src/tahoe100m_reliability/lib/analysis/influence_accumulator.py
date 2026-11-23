@@ -438,7 +438,6 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
     """Class to handle GSEA pathway influence accumulation by cell line:
         - shared global x pathway
         - shared MOA x pathway
-        - specific condition (in this case we do not actually need to accumulate)
     """
     def __init__(
         self,
@@ -448,14 +447,13 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
         cur_time: str,
     ) -> None:
         super().__init__(gene_metadata, output_dir, cur_time)
-        # accumulators
-        self.global_shared_accumulators = self.create_mode_dict()
-        self.moa_shared_accumulators = self.create_mode_dict()
-
         # load GSEA data
         self.global_shared_df = self.__combine_gsea_modes(gsea_dir, 'global_shared')
         self.moa_shared_df = self.__combine_gsea_modes(gsea_dir, 'moa_shared')
-        self.global_specific_df = self.__combine_gsea_modes(gsea_dir, 'global_specific')
+
+        # accumulators
+        self.global_shared_accumulators = self.create_mode_dict()
+        self.moa_shared_accumulators = self.create_mode_dict()
 
         # GSEA masks, to mask the specific pathway
         self.global_shared_masks = self.create_mode_dict()
@@ -468,9 +466,17 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
 
         df1 = pd.read_csv(raw_file) if raw_file.is_file() else None
         df2 = pd.read_csv(cp10k_file) if cp10k_file.is_file() else None
-        dfs = [df for df in [df1, df2]]
+        dfs = [df for df in [df1, df2] if df is not None]
 
-        return pd.concat(dfs, ignore_index=True) if dfs else None
+        # see if there is a combined file
+        if not dfs:
+            combined_file = gsea_dir / f'{axis}_axis_hallmark_gsea.csv'
+            if not combined_file.is_file():
+                return None
+
+            return pd.read_csv(gsea_dir / f'{axis}_axis_hallmark_gsea.csv')
+
+        return pd.concat(dfs, ignore_index=True)
 
     def __build_pathway_masks(self, group_ids, n_genes):
         """Build Boolean pathway-by-gene membership matrix."""
@@ -509,7 +515,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
         return group_ids
 
     def __initialize_gsea_accumulators(
-        self, mode: str, cell_line_id: str, condition: str, ctrl_gene_expressions_dir: Path,
+        self, mode: str, cell_line_id: str, ctrl_gene_expressions_dir: Path,
     ):
         gene_ids, metadata_by_id, token_id_to_position = \
             self.map_gene_ids(cell_line_id, ctrl_gene_expressions_dir)

@@ -68,7 +68,7 @@ INVESTIGATIVE_CELL_LINES = [
     # 'CVCL_0359',  # Bladder
     'CVCL_0371',  # Esophogus
     'CVCL_1381',  # Skin
-    'CVCL_0366',  # Liver
+    # 'CVCL_0366',  # Liver
     # 'CVCL_0332',  # Breast
     'CVCL_1094',  # Cervix
     'CVCL_1125',  # PNS
