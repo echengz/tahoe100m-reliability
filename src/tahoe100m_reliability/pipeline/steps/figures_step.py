@@ -253,8 +253,8 @@ class FiguresStep(PipelineStep):
         if not self.__gsea_dir:
             return
 
-        log.info("Generating GSEA specific figures...")
-        gsea_output_dir = self.__output_dir / 'gsea' / 'specific'
+        log.info("Generating GSEA bar plot figures...")
+        gsea_output_dir = self.__output_dir / 'gsea' / 'bar_plots'
 
         figures = GSEABarPlots(gsea_output_dir)
         figures.generate_figures(self.__gsea_dir)
@@ -332,6 +332,6 @@ class FiguresStep(PipelineStep):
         self.__generate_preprocess_figures()
         self.__generate_reliability_figures()
         self.__generate_systematic_figures()
-        #self.__generate_gsea_shared_figures()
+        self.__generate_gsea_shared_figures()
         self.__generate_gsea_bar_plot_figures()
-        #self.__generate_gsea_influence_figures()
+        self.__generate_gsea_influence_figures()

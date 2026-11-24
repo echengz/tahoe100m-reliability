@@ -93,15 +93,15 @@ class GSEABarPlots:
         """Generate figures."""
         df = pd.read_csv(gsea_dir / 'global_shared_axis_hallmark_gsea.csv')
         self.generate_bar_plot(
-            df, group='cell line (shared)', filename='shared_perturbations_per_cell_line.png',
+            df, group='cell line (shared)', filename='shared_per_cell_line.png',
         )
 
         df = pd.read_csv(gsea_dir / 'moa_shared_axis_hallmark_gsea.csv')
         self.generate_bar_plot(
-            df, group='cell line x MOA (shared)', filename='shared_perturbations_per_cell_line_moa.png',
+            df, group='cell line x MOA (shared)', filename='shared_per_cell_line_moa.png',
         )
 
         df = pd.read_csv(gsea_dir / 'cp10k_global_specific_axis_hallmark_gsea.csv')
         self.generate_bar_plot(
-            df, group='perturbations (specific)', filename='specific_perturbations_per_pathway.png',
+            df, group='perturbations (specific)', filename='specific_per_perturbation.png',
         )
