@@ -441,9 +441,5 @@ class GseaStep(BaseSystematicStep):
                         mode, cell_line, specific_rows, conds, deltas, weights, gene_symbols,
                     )
 
-                    # summarize GSEA results
-                    self.__summarize_gsea_results(mode, shared_rows, shared_moa_rows, specific_rows)
-
-
             # summarize GSEA results
             self.__summarize_gsea_results(mode, shared_rows, shared_moa_rows, specific_rows)
