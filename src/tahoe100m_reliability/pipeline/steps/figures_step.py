@@ -167,6 +167,25 @@ class FiguresStep(PipelineStep):
         )
         combined_figures.generate_figures()
 
+    def __combine_gsea_modes(self, axis: str) -> pd.DataFrame:
+        """Combine the raw/CP10K results as needed."""
+        raw_file = self.__gsea_dir / f"raw_{axis}_shared_axis_hallmark_gsea.csv"
+        cp10k_file = self.__gsea_dir / f"cp10k_{axis}_shared_axis_hallmark_gsea.csv"
+
+        df1 = pd.read_csv(raw_file) if raw_file.is_file() else None
+        df2 = pd.read_csv(cp10k_file) if cp10k_file.is_file() else None
+        dfs = [df for df in [df1, df2] if df is not None]
+
+        # see if there is a combined file
+        if not dfs:
+            combined_file = self.__gsea_dir / f'{axis}_shared_axis_hallmark_gsea.csv'
+            if not combined_file.is_file():
+                raise ValueError("Cannot find shared GSEA hallmark results")
+
+            return pd.read_csv(combined_file)
+
+        return pd.concat(dfs, ignore_index=True)
+
     def __generate_gsea_shared_figures(self):
         """Generate GSEA shared figures."""
         if not self.__gsea_dir:
@@ -191,11 +210,7 @@ class FiguresStep(PipelineStep):
         # Plot everything individually, and also by grouped MOAs
         for axis in ['global', 'moa']:
             # load GSEA results and fix Pperoxisome typo
-            df1 = pd.read_csv(self.__gsea_dir / f"raw_{axis}_shared_axis_hallmark_gsea.csv")
-            df2 = pd.read_csv(self.__gsea_dir / f"cp10k_{axis}_shared_axis_hallmark_gsea.csv")
-            df = pd.concat([df1, df2], ignore_index=True)
-            del df1, df2
-
+            df = self.__combine_gsea_modes(axis)
             df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
 
             if axis == 'global':
@@ -332,6 +347,6 @@ class FiguresStep(PipelineStep):
         self.__generate_preprocess_figures()
         self.__generate_reliability_figures()
         self.__generate_systematic_figures()
-        self.__generate_gsea_shared_figures()
         self.__generate_gsea_bar_plot_figures()
+        self.__generate_gsea_shared_figures()
         self.__generate_gsea_influence_figures()

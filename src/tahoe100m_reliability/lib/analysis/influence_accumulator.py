@@ -474,7 +474,7 @@ class GSEAInfluenceAccumulatorHandler(InfluenceAccumulatorHandler):
             if not combined_file.is_file():
                 return None
 
-            return pd.read_csv(gsea_dir / f'{axis}_axis_hallmark_gsea.csv')
+            return pd.read_csv(combined_file)
 
         return pd.concat(dfs, ignore_index=True)
 

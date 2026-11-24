@@ -20,11 +20,14 @@ class GSEABarPlots:
             - positive (significant)
             - negative (significant)
         """
+        # sample coolwarm color map
+        cmap = plt.get_cmap("coolwarm")
+
         categories = {
-            "Non-Significant Negative NES": "#8CB9D9",
-            "Non-Signitican Positive NES": "#FFBE7A",
-            "Significant Negative NES": "tab:blue",
-            "Signitican Positive NES": "tab:orange",
+            "Non-Sig. Negative": cmap(0.39),
+            "Non-Sig. Positive": cmap(0.61),
+            "Sig. Negative": cmap(0.17),
+            "Sig. Positive": cmap(0.83),
         }
 
         df["category"] = np.select(
