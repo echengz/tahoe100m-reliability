@@ -44,9 +44,9 @@ positional arguments:
     gsea                Runs the GSEA step of the pipeline
     systematic          Runs the systematic step of the pipeline
     figures             Runs the figures step of the pipeline
-    regression          Run the regression pipeline on the original 29 datasets
-    r-reliability       Run the regression reliability step on the original 29 datasets
-    r-systematic        Run the regression systematic step on the original 29 datasets
+    regression          Run the regression pipeline on the previously evaluated 12 cellular datasets
+    r-reliability       Run the regression reliability step on the previously evaluated 12 cellular datasets
+    r-systematic        Run the regression systematic step on the previously evaluated 12 cellular datasets
 ```
 
 Please note that the `preprocess` or `reliability` steps have high memory requirements, and should be run on a machine with sufficient RAM and disk space as they directly deal with the magnitude of the Tahoe-100M dataset.
@@ -85,6 +85,7 @@ uv run tahoe100m-reliability all \
 An overview of the source code is defined as follows:
 
 * `bin`: Contains the entrypoint to this package. Calls entire pipelines or individual steps to run, which are subsequently defined in `pipeline` and `regression`
+    * Also contains one-off scripts in `scripts` used for investigative/developmental purposes
 * `lib`: Contains shared code used by the pipelines. Includes the following:
     * `analysis`: Computational code used for analysis in the `reliability` and `systematic` steps
     * `ingest`: Helper functions for loading data, whether from third-party sources (e.g. streaming Tahoe-100M on HuggingFace) or commonly-used intermediate results from the pipeline (e.g. reliability results)

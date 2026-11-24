@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 tahoe100m-reliability = "tahoe100m_reliability.bin.entrypoint:main"
+quantify-genes = "tahoe100m_reliability.bin.scripts.quantify_genes:main"
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]

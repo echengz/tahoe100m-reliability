@@ -6,7 +6,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 
 
-
 HALLMARK_GROUPINGS = {
     "Apical Junction":"Cellular Component",
     "Apical Surface":"Cellular Component",

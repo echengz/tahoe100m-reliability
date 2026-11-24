@@ -1,0 +1,623 @@
+"""
+Plots systematic figurse related to influence measurement.
+"""
+import re
+import logging
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import string
+
+from matplotlib.lines import Line2D
+from pathlib import Path
+
+from .base import BaseSystematicFigures
+
+log = logging.getLogger(__name__)
+
+
+class InfluenceSystematicFigures(BaseSystematicFigures):
+
+    def __init__(
+        self, systema_dir: Path, output_dir: Path, mode: str, organ_by_cell_line: dict
+    ) -> None:
+        """Initializer."""
+        super().__init__(systema_dir, output_dir)
+
+        self.mode = mode
+        self.organ_by_cell_line = organ_by_cell_line
+
+    def __get_top_genes(
+        self,
+        group: str,
+        top_n: int,
+        ranking_col: str = 'total_influence_abs',
+        target_cell_lines: list | None = None
+    ) -> list:
+        """Get the top genes df the group, ranked based on the
+        given ranking column.
+        """
+        # go other way if ranking a column that counts negative values
+        ascending = 'negative' in ranking_col
+
+        if group == 'global':
+            # Get top genes at the global group
+            df = self.grab_latest_systema_results(
+                prefix=f'gene_influences/systema_{self.mode}_top1000_global'
+            )
+
+            # Select top N genes based on global influence
+            top_genes_df = (
+                df
+                .sort_values(ranking_col, ascending=ascending)
+                .drop_duplicates('group_id')
+                .head(top_n)
+                .copy()
+            )
+        elif group in ['cell_line_id', 'moa', 'cell_line_moa']:
+            # Get top genes per cell line
+            df = self.grab_latest_systema_results(
+                prefix=f'gene_influences/systema_{self.mode}_top200_by_{group}'
+            )
+
+            if group == 'cell_line_moa':
+                if target_cell_lines is not None:
+                    df = df[df['cell_line_id'].isin(target_cell_lines)]
+
+                df['cell_line_moa'] = \
+                    df['cell_line_id'].astype(str) + '|' + df['moa'].astype(str)
+
+            top_genes_df = (
+                df.dropna(subset=[group, ranking_col, 'group_id'])
+                .sort_values(ranking_col, ascending=ascending)
+                .groupby(group, sort=False)
+                .head(top_n)
+                .copy()
+            )
+
+            # Assign within-group ranks
+            top_genes_df['rank'] = (
+                top_genes_df.groupby(group)[ranking_col]
+                .rank(method='first', ascending=ascending)
+                .astype(int)
+            )
+        else:
+            raise ValueError(f"Unrecognized level: {group}")
+
+        if top_genes_df.empty:
+            log.warning(f"No influential genes found for group {group}")
+            return None
+
+        return top_genes_df
+
+    def plot_top_influential_genes(
+        self, top_n: int = 10, group: str = 'cell_line_id'
+    ):
+        """
+        Plot three vertically stacked categorical scatter plots comparing
+        group-specific gene influence against global influence.
+        """
+        top_genes_df = self.__get_top_genes(group='global', top_n=top_n)
+        if top_genes_df is None:
+            return
+
+        top_genes = top_genes_df['group_id'].tolist()
+
+        # Consistent colors across all subplots
+        palette = dict(zip(
+            top_genes,
+            sns.color_palette('turbo', len(top_genes))
+        ))
+
+        df = self.grab_latest_systema_results(
+            prefix=f'gene_influences/systema_{self.mode}_top200_by_{group}'
+        )
+
+        # Only retain globally selected genes
+        df = df[df['group_id'].isin(top_genes)].copy()
+
+        if df.empty:
+            raise ValueError(
+                f"Influential genes completely disjoint in {group}"
+            )
+
+        # Prepare categorical groups
+        categories = sorted(
+            df[group].dropna().astype(str).unique()
+        )
+        categories.append('Global')
+
+        # Create figure with three vertically stacked subplots
+        fig, axes = plt.subplots(
+            nrows=3,
+            ncols=1,
+            figsize=(max(10, len(categories) * 0.3), 15),
+            sharex=True,
+        )
+
+        influence_cols = [
+            'mean_influence',
+            'mean_positive_influence',
+            'mean_negative_influence'
+        ]
+
+        for ax, influence_col in zip(axes, influence_cols):
+
+            # Group-specific observations
+            group_plot_df = df[
+                ['group_id', group, influence_col]
+            ].dropna().copy()
+
+            group_plot_df = group_plot_df.rename(
+                columns={group: 'group'}
+            )
+
+            # Global observations
+            global_plot_df = top_genes_df[
+                ['group_id', influence_col]
+            ].copy()
+
+            global_plot_df['group'] = 'Global'
+
+            # Combine observations
+            plot_df = pd.concat(
+                [group_plot_df, global_plot_df],
+                ignore_index=True
+            )
+
+            plot_df['group'] = pd.Categorical(
+                plot_df['group'].astype(str),
+                categories=categories,
+                ordered=True
+            )
+
+            sns.stripplot(
+                data=plot_df,
+                x='group',
+                y=influence_col,
+                hue='group_id',
+                hue_order=top_genes,
+                palette=palette,
+                jitter=0.1,
+                dodge=False,
+                alpha=0.85,
+                size=7,
+                ax=ax,
+                legend=False
+            )
+
+            ax.axhline(
+                y=0,
+                color='black',
+                linestyle='-',
+                linewidth=1,
+                alpha=0.9,
+                zorder=0
+            )
+
+            ax.set_title(influence_col.replace('_', ' ').title())
+            ax.set_ylabel('Influence')
+            ax.grid(axis='y', alpha=0.3)
+            ax.set_xlabel('')
+
+        # Shared x-axis
+        axes[-1].set_xticks(range(len(categories)))
+        axes[-1].set_xticklabels(categories, rotation=90)
+
+        # Single shared legend
+        handles = [
+            Line2D(
+                [0], [0],
+                marker='o',
+                color='w',
+                markerfacecolor=palette[gene],
+                markersize=7,
+                label=gene
+            )
+            for gene in top_genes
+        ]
+
+        fig.legend(
+            handles=handles,
+            labels=top_genes,
+            title='Gene',
+            bbox_to_anchor=(1.01, 0.95),
+            loc='upper left',
+            frameon=True
+        )
+
+        fig.suptitle(
+            f'Top {top_n} globally influential genes by {group}',
+            fontsize=16,
+            y=1.01
+        )
+
+        sns.despine()
+        plt.tight_layout()
+        plt.savefig(
+            self.output_dir /
+            f"systema_{self.mode}_global_influence_by_{group}.png",
+            dpi=300,
+            bbox_inches='tight'
+        )
+        plt.close(fig)
+
+    def plot_gene_rank_heatmap(
+        self,
+        top_n: int = 5,
+        ranking_col: str = 'total_influence_abs',
+        group: str = 'cell_line_id',
+        label_organs: bool = True,
+        target_cell_lines: list | None = None,
+        outfile: Path | None = None
+    ):
+        """Plot a rank-based heatmap of the top N influential genes
+        selected independently within each cell line.
+        """
+        top_genes_df = self.__get_top_genes(
+            group=group, top_n=top_n, ranking_col=ranking_col, target_cell_lines=target_cell_lines
+        )
+        if top_genes_df is None:
+            return
+
+        # Count number of groups in which each gene appears
+        gene_counts = top_genes_df.groupby('group_id')[group].nunique()
+
+        # Construct gene x group rank matrix
+        rank_matrix = top_genes_df.pivot(index='group_id', columns=group, values='rank')
+
+        # Calculate average rank for each gene
+        gene_avg_rank = top_genes_df.groupby('group_id')['rank'].mean()
+
+        # Sort genes by recurrence, then average rank
+        gene_order = (
+            pd.DataFrame({
+                'count': gene_counts,
+                'avg_rank': gene_avg_rank
+            })
+            .sort_values(
+                ['count', 'avg_rank'],
+                ascending=[False, True]
+            )
+            .index
+            .tolist()
+        )
+
+        rank_matrix = rank_matrix.reindex(gene_order)
+
+        if group in ['cell_line_id', 'cell_line_moa']:
+            # Sort cell lines by organ, then lexicographically
+            cell_line_organs = {}
+            for cell_line_label in rank_matrix.columns:
+                if group == 'cell_line_moa':
+                    cell_line = cell_line_label.split('|')[0]
+                else:
+                    cell_line = cell_line_label
+
+                cell_line_organs[cell_line_label] = self.organ_by_cell_line.get(cell_line, 'Unknown')
+
+            sorted_cell_lines = sorted(
+                rank_matrix.columns,
+                key=lambda x: (cell_line_organs[x], x)
+            )
+
+            # Assign a letter to each organ since we don't have enough space at top
+            organs = list(dict.fromkeys(cell_line_organs[c] for c in sorted_cell_lines))
+
+            organ_labels = {
+                organ: string.ascii_uppercase[i]
+                for i, organ in enumerate(organs)
+            }
+
+            # Calculate centre positions for each organ group
+            organ_centres = {}
+
+            for organ in organs:
+                positions = [
+                    i for i, cell_line in enumerate(sorted_cell_lines)
+                    if cell_line_organs[cell_line] == organ
+                ]
+
+                organ_centres[organ] = (min(positions) + max(positions) + 1) / 2
+
+            rank_matrix = rank_matrix[sorted_cell_lines]
+
+        fig, ax = plt.subplots(figsize=(20, 11))
+
+        # Color map
+        cmap = plt.get_cmap('viridis_r', top_n)
+        cmap.set_bad('white')
+
+        sns.heatmap(
+            rank_matrix,
+            mask=rank_matrix.isna(),
+            cmap=cmap,
+            vmin=0.5,
+            vmax=top_n + 0.5,
+            linewidths=0.4,
+            linecolor='lightgrey',
+            cbar_kws={
+                'label': 'Rank (1 = highest)',
+                'ticks': range(1, top_n + 1)
+            },
+            ax=ax
+        )
+        cbar = ax.collections[0].colorbar
+        cbar.ax.invert_yaxis()
+
+        if group in ['cell_line_id', 'cell_line_moa']:
+            # Draw vertical lines between organ groups
+            previous_organ = None
+
+            for i, cell_line in enumerate(sorted_cell_lines):
+                current_organ = cell_line_organs[cell_line]
+
+                if previous_organ is not None and current_organ != previous_organ:
+                    ax.axvline(x=i, color='black', linewidth=1)
+
+                previous_organ = current_organ
+
+        if group == 'cell_line_moa' and target_cell_lines is not None:
+            # Draw vertical lines between target cell lines
+            previous_cell_line = None
+
+            for i, cell_line_label in enumerate(sorted_cell_lines):
+                current_cell_line = cell_line_label.split('|')[0]
+
+                if previous_cell_line is not None and current_cell_line != previous_cell_line:
+                    ax.axvline(x=i, color='black', linewidth=1)
+
+                previous_cell_line = current_cell_line
+
+        # Cell line ticks at bottom
+        ax.tick_params(axis='x', rotation=90)
+
+        if group == 'cell_line_id':
+            title = 'Cell Line'
+        elif group == 'moa':
+            title = 'MOA'
+        elif group == 'cell_line_moa':
+            title = 'Cell Line x MOA'
+        else:
+            title = group.replace('_', ' ').title()
+
+        ax.set_title(
+            f'Top {top_n} Influential Genes Across {title} ({self.mode}, by {ranking_col})',
+            fontsize=14,
+            pad=15,
+            fontweight='bold'
+        )
+
+        if group == 'cell_line_id' and label_organs:
+            fig.subplots_adjust(bottom=0.1)
+
+            # Create a separate x-axis at the top for organ labels
+            ax_top = ax.twiny()
+            ax_top.set_xlim(ax.get_xlim())
+
+            ax_top.set_xticks([
+                organ_centres[organ] for organ in organs
+            ])
+
+            ax_top.set_xticklabels([
+                organ_labels[organ] for organ in organs
+            ])
+
+            ax_top.tick_params(axis='x', length=0, pad=8, labelsize=11)
+
+            # legend for organs
+            legend_handles = [
+                Line2D([], [], linestyle='none', label=f'{organ_labels[organ]}: {organ}')
+                for organ in organs
+            ]
+
+            legend = ax.legend(
+                handles=legend_handles,
+                title='Organ groups',
+                loc='upper center',
+                bbox_to_anchor=(0.5, -0.18),
+                ncol=7,
+                frameon=False
+            )
+            legend.get_title().set_y(25)
+        else:
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_edgecolor('black')
+                spine.set_linewidth(1)
+
+        ax.set_xlabel(title, labelpad=15, fontweight='bold')
+        ax.set_ylabel('Gene', fontweight='bold')
+        ax.tick_params(axis='x', rotation=90)
+        ax.tick_params(axis='y', rotation=0)
+        fig.tight_layout()
+
+        if outfile is None:
+            outfile = self.output_dir / f'systema_{self.mode}_gene_rank_heatmap_{group}_{ranking_col}.png'
+
+        plt.savefig(outfile, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+    def generate_figures(self) -> None:
+        # Influence results
+        self.plot_top_influential_genes()
+
+        ranking_cols = ['total_influence_abs', 'positive_influence', 'negative_influence']
+
+        for group in ['cell_line_id', 'moa']:
+            for ranking_col in ranking_cols:
+                self.plot_gene_rank_heatmap(group=group, ranking_col=ranking_col)
+
+        # plot by organ
+        organ_output_dir = self.output_dir / 'organ_moa'
+        organ_output_dir.mkdir(parents=True, exist_ok=True)
+
+        organ_to_cell_line = {}
+        for cell_line, organ in self.organ_by_cell_line.items():
+            if organ not in organ_to_cell_line:
+                organ_to_cell_line[organ] = set({})
+            organ_to_cell_line[organ].add(cell_line)
+
+        for group in ['cell_line_moa']:
+            for ranking_col in ranking_cols:
+                for organ, cell_lines in organ_to_cell_line.items():
+                    safe_organ = re.sub(r"[^A-Za-z0-9._-]+", "_", str(organ).lower())
+                    self.plot_gene_rank_heatmap(
+                        group=group, ranking_col=ranking_col, target_cell_lines=cell_lines,
+                        outfile=organ_output_dir / f'systema_{self.mode}_{safe_organ}_{ranking_col}.png',
+                        top_n=10
+                    )
+
+
+class CombinedInfluenceSystematicFigures(BaseSystematicFigures):
+    """Plots combined influence systematic figures comparing the two modes."""
+    def __init__(self, systema_dir: Path, output_dir: Path) -> None:
+        super().__init__(systema_dir, output_dir)
+        self.__colors = {
+            'raw': 'tab:blue',
+            'cp10k': 'tab:orange',
+            'combined': 'tab:purple'
+        }
+
+    def plot_change_in_influence(self, df: pd.DataFrame, plot_df: pd.DataFrame) -> None:
+        """Plots the change in influence scorse before and after normalization."""
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Reference line: equal influence in both runs
+        lower = min(plot_df["mean_abs_influence_raw"].min(),
+                    plot_df["mean_abs_influence_cp10k"].min())
+        upper = max(plot_df["mean_abs_influence_raw"].max(),
+                    plot_df["mean_abs_influence_cp10k"].max())
+        ax.plot([lower, upper], [lower, upper], "--", color="lightgray", alpha=0.65)
+
+        ax.scatter(
+            plot_df["mean_abs_influence_raw"],
+            plot_df["mean_abs_influence_cp10k"],
+            alpha=0.65,
+            s=24,
+            color="grey"
+        )
+
+        # Identify top genes in each dataset, and label their union
+        n_top_genes = 5
+        top_raw = set(
+            df.nlargest(n_top_genes, "mean_abs_influence_raw")["group_id"]
+            .dropna()
+            .tolist()
+        )
+
+        top_cp10k = set(
+            df.nlargest(n_top_genes, "mean_abs_influence_cp10k")["group_id"]
+            .dropna()
+            .tolist()
+        )
+
+        for _, row in plot_df[
+            plot_df["group_id"].isin(top_raw | top_cp10k)
+        ].iterrows():
+            xytext = (4, 4)
+
+            # adjust for specific genes
+            if row["group_id"] in ["MT-RNR1", "MT-ND1"]:
+                xytext = (-30, 6)
+            elif row["group_id"] in ["MT-ATP6", "FN1"]:
+                xytext = (6, -2)
+            elif row["group_id"] == "IGFBP3":
+                xytext = (2, 6)
+            elif row["group_id"] == "MT-CO1":
+                xytext = (4, 2)
+
+            ax.annotate(
+                row["group_id"],
+                (row["mean_abs_influence_raw"], row["mean_abs_influence_cp10k"]),
+                xytext=xytext,
+                textcoords="offset points",
+                fontsize=8,
+            )
+
+        # Highlight top genes
+        for genes, color in [
+            (top_raw - top_cp10k, self.__colors['raw']),
+            (top_cp10k - top_raw, self.__colors['cp10k']),
+            (top_raw & top_cp10k, self.__colors['combined']),
+        ]:
+            subset = plot_df[plot_df["group_id"].isin(genes)]
+
+            ax.scatter(
+                subset["mean_abs_influence_raw"],
+                subset["mean_abs_influence_cp10k"],
+                alpha=0.65,
+                s=24, 
+                color=color,
+            )
+
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['raw'],
+                   label=f"In top {n_top_genes} for Raw",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['cp10k'],
+                   label=f"In top {n_top_genes} for CP10K",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=self.__colors['combined'],
+                   label=f"In top {n_top_genes} for both",
+                   markersize=7
+            ),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor="lightgray", label="Other genes", markersize=7),
+            Line2D([0], [0], color="lightgray", linestyle="--", alpha=0.65,
+                   label="Equal influence (y = x)"),
+        ]
+
+        ax.legend(handles=legend_elements, title="Gene influence", fontsize=8)
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("Absolute mean influence - Raw")
+        ax.set_ylabel("Absolute mean influence - CP10K")
+        ax.set_title(f"Raw vs CP10K influence of top {len(plot_df)} shared influential genes")
+        ax.grid(True, which="both", alpha=0.2)
+
+        fig.tight_layout()
+        fig.savefig(
+            self.output_dir / "gene_influence_raw_vs_cp10k.png", dpi=300, bbox_inches="tight"
+        )
+        plt.close(fig)
+
+    def generate_figures(self) -> None:
+        # Create combined DF
+        influence_cols = [
+            "mean_abs_influence",
+            "mean_positive_influence",
+            "mean_negative_influence",
+        ]
+
+        raw_df = self.grab_latest_systema_results(
+            prefix="gene_influences/systema_raw_top1000_global"
+        )
+        cp10k_df = self.grab_latest_systema_results(
+            prefix="gene_influences/systema_cp10k_top1000_global"
+        )
+
+        raw_df = raw_df[["group_id"] + influence_cols].rename(
+            columns={col: f"{col}_raw" for col in influence_cols}
+        )
+
+        cp10k_df = cp10k_df[["group_id"] + influence_cols].rename(
+            columns={col: f"{col}_cp10k" for col in influence_cols}
+        )
+
+        df = raw_df.merge(cp10k_df, on="group_id", how="inner")
+        del raw_df, cp10k_df
+
+        # Log axes require strictly positive mean absolute influence
+        plot_df = df[
+            (df["mean_abs_influence_raw"] > 0) &
+            (df["mean_abs_influence_cp10k"] > 0)
+        ].copy()
+
+        self.plot_change_in_influence(df, plot_df)

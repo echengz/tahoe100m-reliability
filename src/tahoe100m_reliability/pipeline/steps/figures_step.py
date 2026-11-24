@@ -10,13 +10,14 @@ import re
 from pathlib import Path
 
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
-    get_cell_line_metadata,
     get_drug_metadata,
+    get_organ_by_cell_line,
 )
 from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
-from .figures.gsea_figure_helpers import (
+from .figures.gsea_figures import (
+    GSEABarPlots,
     GSEAIndividualHeatmaps,
     GSEAInfluenceFigures,
     GSEARadialHeatmaps,
@@ -24,7 +25,8 @@ from .figures.gsea_figure_helpers import (
 from .figures.preprocess_figures import PreprocessFigures
 from .figures.reliability_figures import ReliabilityFigures
 from .figures.systematic_figures import (
-    CombinedSystematicFigures,
+    CombinedInfluenceSystematicFigures,
+    InfluenceSystematicFigures,
     SystematicFigures,
 )
 
@@ -135,63 +137,63 @@ class FiguresStep(PipelineStep):
             return
 
         systema_output_dir = self.__output_dir / 'systematic'
-        systema_output_dir.mkdir(parents=True, exist_ok=True)
+        organ_by_cell_line = get_organ_by_cell_line()
 
         for mode in ['raw', 'cp10k']:
-            log.info(f"Generating {mode} systema figures...")
-            figures = SystematicFigures(self.__systematic_dir, systema_output_dir, mode)
+            log.info(f"Generating {mode} systematic figures...")
+
+            # basic systematic figures
+            figures = SystematicFigures(
+                self.__systematic_dir,
+                systema_output_dir / 'systematic',
+                mode,
+                organ_by_cell_line,
+            )
             figures.generate_figures()
 
+            # influence figures
+            inf_figures = InfluenceSystematicFigures(
+                self.__systematic_dir,
+                systema_output_dir / 'influence',
+                mode,
+                organ_by_cell_line,
+            )
+            inf_figures.generate_figures()
+
         # combined results
-        combined_figures = CombinedSystematicFigures(self.__systematic_dir, systema_output_dir)
+        combined_figures = CombinedInfluenceSystematicFigures(
+            self.__systematic_dir,
+            systema_output_dir / 'influence',
+        )
         combined_figures.generate_figures()
 
-    def __merge_influence_with_gsea(self, df: pd.DataFrame, mode: str) -> pd.DataFrame:
-        """Merge influence with GSEA results, if influence results exist."""
-        if not self.__systematic_dir:
-            return df, False
+    def __combine_gsea_modes(self, axis: str) -> pd.DataFrame:
+        """Combine the raw/CP10K results as needed."""
+        raw_file = self.__gsea_dir / f"raw_{axis}_shared_axis_hallmark_gsea.csv"
+        cp10k_file = self.__gsea_dir / f"cp10k_{axis}_shared_axis_hallmark_gsea.csv"
 
-        influence_dir = self.__systematic_dir / 'gsea_influences'
-        influence_df = pd.DataFrame()
+        df1 = pd.read_csv(raw_file) if raw_file.is_file() else None
+        df2 = pd.read_csv(cp10k_file) if cp10k_file.is_file() else None
+        dfs = [df for df in [df1, df2] if df is not None]
 
-        if influence_dir.is_dir():
-            files = influence_dir.glob(f"systema_{mode}_gsea_moa_*.csv")
-            latest_file = sorted(files)[-1]
+        # see if there is a combined file
+        if not dfs:
+            combined_file = self.__gsea_dir / f'{axis}_shared_axis_hallmark_gsea.csv'
+            if not combined_file.is_file():
+                raise ValueError("Cannot find shared GSEA hallmark results")
 
-            moa_influence_df = pd.read_csv(latest_file)
-            moa_influence_df['mode'] = mode
-            moa_influence_df = moa_influence_df.rename(
-                columns={'group_id': 'term', 'cell_line_id': 'cell_line'}
-            )
+            return pd.read_csv(combined_file)
 
-            influence_df = pd.concat(
-                [influence_df, moa_influence_df], ignore_index=True
-            )
-        else:
-            return df, False
+        return pd.concat(dfs, ignore_index=True)
 
-        influence_df = df.merge(
-            influence_df,
-            on=['moa', 'cell_line', 'mode', 'term'],
-            how='inner',
-            validate='one_to_one'
-        )
-        influence_df["abs_nes"] = influence_df["nes"].abs()
-
-        return influence_df, True
-
-    def __generate_gsea_figures(self):
-        """Generate GSEA figures; influence plots also require systematic results."""
+    def __generate_gsea_shared_figures(self):
+        """Generate GSEA shared figures."""
         if not self.__gsea_dir:
             return
 
-        log.info("Generating GSEA figures...")
+        log.info("Generating GSEA shared figures...")
         gsea_output_dir = self.__output_dir / 'gsea'
-
-        metadata = get_cell_line_metadata(to_pandas=True)
-        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-        metadata["organ"] = metadata["Organ"].astype(str).str.strip()
-        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
+        organ_by_cell_line = get_organ_by_cell_line()
 
         # Instantiate classes to handle heatmap plotting
         indv_heatmaps = GSEAIndividualHeatmaps(
@@ -204,10 +206,11 @@ class FiguresStep(PipelineStep):
             organ_by_cell_line=organ_by_cell_line,
         )
 
-        # plot everything individually, and also by grouped MOAs
+        # Shared axis
+        # Plot everything individually, and also by grouped MOAs
         for axis in ['global', 'moa']:
             # load GSEA results and fix Pperoxisome typo
-            df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
+            df = self.__combine_gsea_modes(axis)
             df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
 
             if axis == 'global':
@@ -260,37 +263,83 @@ class FiguresStep(PipelineStep):
                         moa_clusters=moa_clusters,
                     )
 
-                    # if systematic influence results exist for GSEA, merge them in and plot
-                    influence_df, influence_exists = self.__merge_influence_with_gsea(df, mode)
+    def __generate_gsea_bar_plot_figures(self):
+        """Generate GSEA bar plot figures."""
+        if not self.__gsea_dir:
+            return
 
-                    if influence_exists:
-                        infl_gsea_plots = GSEAInfluenceFigures(
-                            output_dir=gsea_output_dir / 'influence_gsea'
-                        )
-                        infl_gsea_plots.generate_figures(
-                            df=influence_df, mode=mode, filename=f"gsea_influence_{mode}.png"
-                        )
+        log.info("Generating GSEA bar plot figures...")
+        gsea_output_dir = self.__output_dir / 'gsea' / 'bar_plots'
 
-                        # Identify pathways with largest number of significant NES values and plot those
-                        mode_df = influence_df[influence_df["mode"] == mode]
+        figures = GSEABarPlots(gsea_output_dir)
+        figures.generate_figures(self.__gsea_dir)
 
-                        significance_fraction = (
-                            mode_df.groupby("term")["fdr_qval"]
-                            .apply(lambda x: (x < 0.05).mean())
-                        )
+    def __merge_influence_with_gsea(self, df: pd.DataFrame, mode: str, axis: str) -> pd.DataFrame:
+        """Merge influence with GSEA results, if influence results exist."""
+        if not self.__systematic_dir:
+            return df, False
 
-                        target_pathways = (
-                            significance_fraction
-                            .sort_values(ascending=False)
-                            .head(10)
-                            .index
-                            .tolist()
-                        )
+        influence_dir = self.__systematic_dir / 'gsea_influences'
+        if not influence_dir.is_dir():
+            raise FileNotFoundError(
+                "Need GSEA influence results from systematic steps to generate these figures"
+            )
 
-                        infl_gsea_plots.generate_figures(
-                            df=influence_df, mode=mode, filename=f"gsea_influence_{mode}_significant.png",
-                            target_pathways=target_pathways
-                        )
+        influence_df = pd.DataFrame()
+
+        files = influence_dir.glob(f"systema_{mode}_gsea_{axis}_*.csv")
+        latest_file = sorted(files)[-1]
+
+        moa_influence_df = pd.read_csv(latest_file)
+        moa_influence_df['mode'] = mode
+        moa_influence_df = moa_influence_df.rename(
+            columns={'group_id': 'term', 'cell_line_id': 'cell_line'}
+        )
+
+        influence_df = pd.concat(
+            [influence_df, moa_influence_df], ignore_index=True
+        )
+
+        merge_on = ['cell_line', 'mode', 'term']
+        if axis == 'moa':
+            merge_on.append('moa')
+
+        influence_df = df.merge(
+            influence_df,
+            on=merge_on,
+            how='inner',
+            validate='one_to_one'
+        )
+        influence_df["abs_nes"] = influence_df["nes"].abs()
+
+        return influence_df
+
+    def __generate_gsea_influence_figures(self):
+        """Generate GSEA x Systematic influence figures."""
+        if not self.__gsea_dir or not self.__systematic_dir:
+            return
+
+        log.info("Generating GSEA x Systematic influence figures...")
+        gsea_influence_output_dir = self.__output_dir / 'gsea' / 'gsea_influence'
+
+        for axis in ['global', 'moa']:
+            # ignore global axis for now; does not produce interesting plots
+            if axis == 'global':
+                continue
+
+            infl_gsea_plots = GSEAInfluenceFigures(
+                output_dir=gsea_influence_output_dir, axis=axis
+            )
+
+            # load GSEA results and fix Pperoxisome typo
+            df = pd.read_csv(self.__gsea_dir / f"{axis}_shared_axis_hallmark_gsea.csv")
+            df.loc[df['term'] == 'Pperoxisome', 'term'] = 'Peroxisome'
+
+            for mode in ['raw', 'cp10k']:
+                influence_df = self.__merge_influence_with_gsea(df, mode, axis)
+                infl_gsea_plots.generate_figures(
+                    df=influence_df, mode=mode, file_prefix='gsea_influence'
+                )
 
     def run(self) -> None:
         """Generate figures."""
@@ -298,4 +347,6 @@ class FiguresStep(PipelineStep):
         self.__generate_preprocess_figures()
         self.__generate_reliability_figures()
         self.__generate_systematic_figures()
-        self.__generate_gsea_figures()
+        self.__generate_gsea_bar_plot_figures()
+        self.__generate_gsea_shared_figures()
+        self.__generate_gsea_influence_figures()

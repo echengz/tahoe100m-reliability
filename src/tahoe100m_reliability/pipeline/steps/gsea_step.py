@@ -16,13 +16,21 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 from typing import Any
 
+from tahoe100m_reliability.lib.analysis.compute_gsea import (
+    INVESTIGATIVE_CELL_LINES,
+    blitzgsea_nes,
+    gsea_nes,
+)
 from tahoe100m_reliability.lib.ingest.intermediate_loaders import (
     load_delta_p_results,
     load_gene_ids,
     load_reliable_conditions,
 )
+from tahoe100m_reliability.lib.ingest.msigdb_hallmark import (
+    load_hallmark_sets,
+)
 from tahoe100m_reliability.lib.ingest.tahoe100m_dataset import (
-    get_cell_line_metadata,
+    get_organ_by_cell_line,
 )
 from tahoe100m_reliability.lib.step.base_systematic_step import BaseSystematicStep
 
@@ -35,66 +43,11 @@ FDR_THRESHOLD = 0.05
 CLUSTER_MIN_PATHWAY_COVERAGE = 0.90
 
 
-def load_hallmark_sets():
-    """Load hallmark sets."""
-    library = blitz.enrichr.get_library("MSigDB_Hallmark_2020")
-    return {
-        term: [gene.upper() for gene in genes]
-        for term, genes in library.items()
-    }
-
-
-def gsea_nes(vec, genes_upper, hallmark_sets):
-    """Runs preranked GSEA using all genes."""
-    series = pd.Series(
-        np.asarray(vec, dtype=float),
-        index=genes_upper
-    )
-    series = series[~series.index.duplicated()].sort_values(ascending=False)
-
-    # skip degenerate rankings (near-constant => gseapy Rust backend panics);
-    # residual~0 perts correctly -> ns
-    if (
-        series.shape[0] < 200
-        or series.std() < 1e-12
-        or (series.value_counts().iloc[0] / series.shape[0]) > 0.5
-    ):
-        return {}
-
-    try:
-        result = gp.prerank(
-            rnk=series,
-            gene_sets=hallmark_sets,
-            min_size=5,
-            max_size=500,
-            permutation_num=1000,
-            threads=4,
-            seed=0,
-            no_plot=True,
-            outdir=None,
-            verbose=False,
-        ).res2d
-
-        return {
-            str(row.Term).replace("HALLMARK_", ""): {
-                "nes": float(row['NES']),
-                "fdr_qval": float(row['FDR q-val']),
-                "tag_pct": row['Tag %'],
-                "gene_pct": row['Gene %'],
-                "lead_genes": row['Lead_genes']
-            }
-            for _, row in result.iterrows()
-        }
-
-    except Exception as exc:
-        log.info(f"  WARNING: GSEA failed/skipped: {exc}")
-        return {}
-
-
 class GseaStep(BaseSystematicStep):
 
     def __init__(
         self,
+        target_axis: str = 'shared',
         num_top_pathways: int = 10,
         num_moa_clusters: int = 4,
         skip_moa_shared_axis: bool = False,
@@ -103,6 +56,7 @@ class GseaStep(BaseSystematicStep):
         """Initializer."""
         super().__init__(**kwargs)
         self.ds_name = 'tahoe100m'
+        self.target_axis = target_axis
         self.num_top_pathways = num_top_pathways
         self.skip_moa_shared_axis = skip_moa_shared_axis
 
@@ -127,6 +81,12 @@ class GseaStep(BaseSystematicStep):
         BaseSystematicStep.add_cli_args(parser=parser)
 
         parser.add_argument(
+            '--target-axis', dest='target_axis', type=str,
+            choices=['shared', 'specific', 'both'], default='shared',
+            help='Which axis to run GSEA for; defaults to both (shared and specific)'
+        )
+
+        parser.add_argument(
             '--num-top-pathways', dest='num_top_pathways', type=int, default=10,
             help='Number of top positive/negative NES pathways to retain'
         )
@@ -141,7 +101,21 @@ class GseaStep(BaseSystematicStep):
             help='Whether or not to skip calculation of the MOA shared axis results'
         )
 
-    def __run_gsea(
+    def __summarize_stats(
+        self, mode: str, cell_line: str, term: str, stats: dict, n_genes_ranked: int,
+    ) -> dict:
+        return {
+            "mode": mode,
+            "cell_line": cell_line,
+            "term": term,
+            "nes": stats["nes"],
+            "fdr_qval": stats["fdr_qval"],
+            "lead_genes": stats["lead_genes"],
+            "n_lead_genes": len(stats["lead_genes"].split(";")),
+            "n_genes_ranked": n_genes_ranked
+        }
+
+    def __run_shared_gsea(
         self,
         mode: str,
         cell_line: str,
@@ -161,24 +135,51 @@ class GseaStep(BaseSystematicStep):
         gsea = gsea_nes(shared, genes_upper, self.hallmark_sets)
 
         for term, stats in gsea.items():
-            row = {
-                "mode": mode,
-                "cell_line": cell_line,
-                "term": term,
-                "nes": stats["nes"],
-                "fdr_qval": stats["fdr_qval"],
-                "tag_pct": stats["tag_pct"],
-                "gene_pct": stats["gene_pct"],
-                "lead_genes": stats["lead_genes"],
-                "n_lead_genes": len(stats["lead_genes"].split(";")),
-                "n_reliable_conditions": len(conds),
-                "n_genes_ranked": len(gene_symbols),
-            }
+            row = self.__summarize_stats(mode, cell_line, term, stats, len(gene_symbols))
+            row['n_reliable_conditions'] = len(conds)
 
             if moa is not None:
                 row['moa'] = moa
 
             output_rows.append(row)
+
+    def __run_specific_gsea(
+        self,
+        mode: str,
+        cell_line: str,
+        output_rows: list[Any],
+        conds,
+        deltas,
+        weights,
+        gene_symbols,
+    ):
+        """Runs GSEA on the specific axis for specified conditions."""
+        # filter to just 5.0 dosages for exploratory testing
+        conds = [c for c in conds if c.endswith('|5.0')]
+
+        rel_weights = np.asarray([weights[c] for c in conds], dtype=np.float64)
+        rel_deltas = np.stack([deltas[c] for c in conds]).astype(np.float64)
+        shared = np.average(rel_deltas, axis=0, weights=rel_weights)
+        shared_norm_sq = np.dot(shared, shared)
+
+        if shared_norm_sq < 1e-24:
+            log.warning(f"{cell_line}: shared axis is near zero")
+            return
+
+        genes_upper = [g.upper() for g in gene_symbols]
+
+        # Calculate the specific residual and run GSEA for every perturbation
+        for i, condition in enumerate(conds):
+            condition_delta = rel_deltas[i]
+            projection = (np.dot(condition_delta, shared) / shared_norm_sq) * shared
+            specific = condition_delta - projection
+
+            gsea = blitzgsea_nes(specific, genes_upper, self.hallmark_sets)
+
+            for term, stats in gsea.items():
+                row = self.__summarize_stats(mode, cell_line, term, stats, len(gene_symbols))
+                row['condition'] = condition
+                output_rows.append(row)
 
     def __load_deltas_and_weights(
         self,
@@ -218,35 +219,6 @@ class GseaStep(BaseSystematicStep):
         }
 
         return deltas, weights
-
-    def __summarize_gsea_results(
-        self, all_rows: list, moa_rows: list,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Summarize GSEA results, also add organ information."""
-        # add organ information
-        metadata = get_cell_line_metadata(to_pandas=True)
-        metadata["cellosaurus_id"] = metadata["Cell_ID_Cellosaur"].astype(str).str.strip()
-
-        metadata["organ"] = (
-            metadata["Organ"]
-            .where(metadata["Organ"].notna())
-            .astype("string")
-            .str.strip()
-        )
-
-        organ_by_cell_line = metadata.set_index("cellosaurus_id")["organ"].to_dict()
-        results = {}
-
-        for axis, rows in {"global": all_rows, "moa": moa_rows}.items():
-            df = pd.DataFrame(rows)
-            df["significant"] = df["fdr_qval"] < FDR_THRESHOLD
-            df["organ"] = df["cell_line"].map(organ_by_cell_line)
-
-            df.to_csv(self.output_dir / f"{axis}_shared_axis_hallmark_gsea.csv", index=False)
-
-            results[axis] = df
-
-        return results["global"], results["moa"]
 
     def __moa_pca_and_cluster(self, mode: str, df: pd.DataFrame) -> None:
         """Run PCA on MOA GSEA results and cluster based on centroids.
@@ -350,13 +322,36 @@ class GseaStep(BaseSystematicStep):
 
         moa_clusters.to_csv(output_dir / f"{mode}_moa_cluster_assignments.csv", index=False)
 
+    def __summarize_gsea_results(
+        self, mode: str, shared_rows: list, shared_moa_rows: list, specific_rows: list,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Summarize GSEA results, also add organ information."""
+        # add organ information
+        organ_by_cell_line = get_organ_by_cell_line()
+        groups = {
+            'global_shared': shared_rows,
+            'moa_shared': shared_moa_rows,
+            'global_specific': specific_rows
+        }
+
+        for axis, rows in groups.items():
+            if not rows:
+                continue
+
+            df = pd.DataFrame(rows)
+            df["significant"] = df["fdr_qval"] < FDR_THRESHOLD
+            df["organ"] = df["cell_line"].map(organ_by_cell_line)
+
+            df.to_csv(self.output_dir / f"{mode}_{axis}_axis_hallmark_gsea.csv", index=False)
+
+            # cluster MOA results
+            if axis == 'moa_shared':
+                self.__moa_pca_and_cluster(mode, df)
+
     def run(self) -> None:
         """Run the step."""
+        log.info(f"Running the following axis: {self.target_axis}")
         drug_to_moa = self.load_drug_moa_mapping() if not self.skip_moa_shared_axis else {}
-
-        # track globally and by MOA for each cell line
-        all_rows = []
-        moa_rows = []
 
         for mode, delta_p_mode in self.mode_mapping.items():
             reliability_dir = delta_p_mode.reliability_dir
@@ -365,6 +360,11 @@ class GseaStep(BaseSystematicStep):
             if not delta_p_dir or not delta_p_dir.is_dir():
                 log.warning(f"{mode} delta_p dir not found, skipping mode")
                 continue
+
+            # track results
+            shared_rows = []
+            shared_moa_rows = []
+            specific_rows = []
 
             reliable_conds, _ = load_reliable_conditions(
                 self.ds_name, reliability_dir, self.clusters
@@ -402,51 +402,44 @@ class GseaStep(BaseSystematicStep):
                         f"provides {len(gene_ids)} gene IDs. Check gene order/source."
                     )
 
-                # Run GSEA
-                # Global shared axis: n_stim_cells - weighted average of reliable perturbation deltas
-                self.__run_gsea(
-                    mode,
-                    cell_line,
-                    all_rows,
-                    conds,
-                    deltas,
-                    weights,
-                    gene_symbols,
-                )
+                # Run GSEA on the shared axis
+                if self.target_axis in ['shared', 'both']:
+                    # Global
+                    self.__run_shared_gsea(
+                        mode, cell_line, shared_rows, conds, deltas, weights, gene_symbols,
+                    )
 
-                # MOA-specific axis - groups reliability perturbations for a specific MOA
-                # and computes along that shared axis
-                if not self.skip_moa_shared_axis:
-                    moas_map = {}
-                    for condition in conds:
-                        parts = condition.split("|")
-                        drug = parts[1]  # TODO - do something with dosage?
+                    # MOA axis - groups reliability perturbations for a specific MOA and computes along that shared axis
+                    # Only runs for the shared axis; does not do for specific
+                    if not self.skip_moa_shared_axis:
+                        moas_map = {}
+                        for condition in conds:
+                            parts = condition.split("|")
+                            drug = parts[1]  # TODO - do something with dosage?
 
-                        moa = drug_to_moa.get(drug, "Unknown MOA")
-                        if moa not in moas_map:
-                            moas_map[moa] = []
+                            moa = drug_to_moa.get(drug, "Unknown MOA")
+                            if moa not in moas_map:
+                                moas_map[moa] = []
 
-                        moas_map[moa].append(condition)
+                            moas_map[moa].append(condition)
 
-                    for moa, moa_conds in moas_map.items():
-                        self.__run_gsea(
-                            mode,
-                            cell_line,
-                            moa_rows,
-                            moa_conds,
-                            deltas,
-                            weights,
-                            gene_symbols,
-                            moa=moa,
-                        )
+                        for moa, moa_conds in moas_map.items():
+                            self.__run_shared_gsea(
+                                mode, cell_line, shared_moa_rows, moa_conds, deltas, weights, gene_symbols,
+                                moa=moa,
+                            )
 
-        # summarize GSEA results
-        _, moa_df = self.__summarize_gsea_results(all_rows, moa_rows)
+                # Run GSEA on the specific axis
+                if self.target_axis in ['specific', 'both']:
+                    # Global
 
-        # for skipping above and going straight to clustering
-        # moa_df = pd.read_csv('./outputs/gsea/moa_shared_axis_hallmark_gsea.csv')
+                    # filter to cell line with most number of genes for investigative purposes
+                    if cell_line not in INVESTIGATIVE_CELL_LINES:
+                        continue
 
-        # cluster MOA results
-        if not self.skip_moa_shared_axis:
-            for mode, mode_df in moa_df.groupby("mode"):
-                self.__moa_pca_and_cluster(mode, mode_df)
+                    self.__run_specific_gsea(
+                        mode, cell_line, specific_rows, conds, deltas, weights, gene_symbols,
+                    )
+
+            # summarize GSEA results
+            self.__summarize_gsea_results(mode, shared_rows, shared_moa_rows, specific_rows)

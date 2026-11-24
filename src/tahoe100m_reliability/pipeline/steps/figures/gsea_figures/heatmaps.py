@@ -10,7 +10,7 @@ from matplotlib.colors import TwoSlopeNorm
 from matplotlib.cm import ScalarMappable
 from matplotlib.collections import PolyCollection
 
-from .config import (
+from .base import (
     GSEAHeatmaps,
     HALLMARK_GROUPINGS,
     FLAGGED_CELL_LINES,
@@ -400,6 +400,7 @@ class GSEAIndividualHeatmaps(GSEAHeatmaps):
         )
 
         fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
 
     def plot_heatmaps(
         self, gsea_df: pd.DataFrame, filename_prefix: str, title_postfix: str,

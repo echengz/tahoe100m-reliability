@@ -100,8 +100,7 @@ class Tahoe100mPipelineRunner(PipelineStep):
             'ctrl_gene_expressions_dir': ctrl_gene_expressions_dir,
             'reliability_raw_dir': reliability_raw_dir,
             'reliability_cp10k_dir': reliability_cp10k_dir,
-            'gsea_global_shared_axis_hallmark': gsea_dir / 'global_shared_axis_hallmark_gsea.csv',
-            'gsea_moa_shared_axis_hallmark': gsea_dir / 'moa_shared_axis_hallmark.csv'
+            'gsea_dir': gsea_dir,
         }
 
         figures_args = {
