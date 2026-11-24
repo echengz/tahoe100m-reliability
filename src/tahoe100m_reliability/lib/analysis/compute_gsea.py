@@ -63,13 +63,13 @@ INVESTIGATIVE_CELL_LINES = [
     'CVCL_0480',  # Pancreas
     'CVCL_0459',  # Lung
     'CVCL_1056',  # Kidney
-    # 'CVCL_0293',  # Uterus
-    # 'CVCL_0131',  # CNS/Brain
-    # 'CVCL_0359',  # Bladder
+    'CVCL_0293',  # Uterus
+    'CVCL_0131',  # CNS/Brain
+    'CVCL_0359',  # Bladder
     'CVCL_0371',  # Esophogus
     'CVCL_1381',  # Skin
-    # 'CVCL_0366',  # Liver
-    # 'CVCL_0332',  # Breast
+    'CVCL_0366',  # Liver
+    'CVCL_0332',  # Breast
     'CVCL_1094',  # Cervix
     'CVCL_1125',  # PNS
 ]

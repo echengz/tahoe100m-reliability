@@ -17,6 +17,7 @@ from tahoe100m_reliability.lib.ingest.treatment_set import TreatmentSet
 from tahoe100m_reliability.lib.step.pipeline_step import PipelineStep
 
 from .figures.gsea_figures import (
+    GSEABarPlots,
     GSEAIndividualHeatmaps,
     GSEAInfluenceFigures,
     GSEARadialHeatmaps,
@@ -166,12 +167,12 @@ class FiguresStep(PipelineStep):
         )
         combined_figures.generate_figures()
 
-    def __generate_gsea_figures(self):
-        """Generate GSEA figures; influence plots also require systematic results."""
+    def __generate_gsea_shared_figures(self):
+        """Generate GSEA shared figures."""
         if not self.__gsea_dir:
             return
 
-        log.info("Generating GSEA figures...")
+        log.info("Generating GSEA shared figures...")
         gsea_output_dir = self.__output_dir / 'gsea'
         organ_by_cell_line = get_organ_by_cell_line()
 
@@ -247,6 +248,17 @@ class FiguresStep(PipelineStep):
                         moa_clusters=moa_clusters,
                     )
 
+    def __generate_gsea_bar_plot_figures(self):
+        """Generate GSEA bar plot figures."""
+        if not self.__gsea_dir:
+            return
+
+        log.info("Generating GSEA specific figures...")
+        gsea_output_dir = self.__output_dir / 'gsea' / 'specific'
+
+        figures = GSEABarPlots(gsea_output_dir)
+        figures.generate_figures(self.__gsea_dir)
+
     def __merge_influence_with_gsea(self, df: pd.DataFrame, mode: str, axis: str) -> pd.DataFrame:
         """Merge influence with GSEA results, if influence results exist."""
         if not self.__systematic_dir:
@@ -320,5 +332,6 @@ class FiguresStep(PipelineStep):
         self.__generate_preprocess_figures()
         self.__generate_reliability_figures()
         self.__generate_systematic_figures()
-        self.__generate_gsea_figures()
-        self.__generate_gsea_influence_figures()
+        #self.__generate_gsea_shared_figures()
+        self.__generate_gsea_bar_plot_figures()
+        #self.__generate_gsea_influence_figures()
