@@ -204,6 +204,13 @@ class FiguresStep(PipelineStep):
         radial_heatmaps = GSEARadialHeatmaps(
             output_dir=gsea_output_dir / 'heatmaps_clustered_moa',
             organ_by_cell_line=organ_by_cell_line,
+            detailed=False,
+        )
+
+        detailed_radial_heatmaps = GSEARadialHeatmaps(
+            output_dir=gsea_output_dir / 'heatmaps_clustered_moa',
+            organ_by_cell_line=organ_by_cell_line,
+            detailed=True,
         )
 
         # Shared axis
@@ -242,9 +249,9 @@ class FiguresStep(PipelineStep):
                     }
                     moa_order = []
 
-                    # Plot clustered MOA GSEA results
+                    # Plot clustered MOA GSEA results (detailed)
                     for cluster, moas in moa_clusters.items():
-                        radial_heatmaps.plot_moa_radial_heatmaps(
+                        detailed_radial_heatmaps.plot_moa_radial_heatmaps(
                             gsea_df=df[df["moa"].isin(moas)],
                             mode=mode,
                             filename_prefix=f"gsea_radial_by_moa_cluster{cluster}",
@@ -253,7 +260,7 @@ class FiguresStep(PipelineStep):
 
                         moa_order.extend(moas)
 
-                    # Plot overall GSEA results
+                    # Plot overall GSEA results (not detailed)
                     radial_heatmaps.plot_moa_radial_heatmaps(
                         gsea_df=df,
                         mode=mode,

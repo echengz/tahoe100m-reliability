@@ -26,13 +26,15 @@ log = logging.getLogger(__name__)
 
 class GSEARadialHeatmaps(GSEAHeatmaps):
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, detailed: bool = False, **kwargs) -> None:
         """Initializer."""
         super().__init__(**kwargs)
+
+        self.__detailed = detailed
         self.__inner_radius = 27.0
         self.__outer_radius = 94.0
 
-        self.__top_gap = 50
+        self.__top_gap = 50 if detailed else 35
         self.__sector_gap = 1
 
     def __ordered_cell_lines(self, df: pd.DataFrame) -> list[str]:
@@ -158,15 +160,23 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         circos,
         moa_clusters,
         color="black",
-        linewidth=0.5,
+        linewidth=None,
         label_radius=None,
     ):
         """Draw a continuous closed outline and label each MOA cluster."""
-
         ax = circos.ax
 
         if label_radius is None:
-            label_radius = self.__outer_radius + 15
+            if self.__detailed:
+                label_radius = self.__outer_radius + 15
+            else:
+                label_radius = self.__outer_radius + 9
+
+        if linewidth is None:
+            if self.__detailed:
+                linewidth = 0.5
+            else:
+                linewidth = 1
 
         for cluster, moas in moa_clusters.items():
 
@@ -227,7 +237,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 f'Cluster {cluster}',
                 ha="center",
                 va="center",
-                fontsize=8,
+                fontsize=10,
                 fontweight="bold",
                 rotation=0,
                 rotation_mode="anchor",
@@ -244,6 +254,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         vmax: float | None = None,
         title: str = 'Hallmark GSEA by MOA',
         moa_clusters: dict | None = None,
+        target_pathways: list[str] = None,
     ) -> dict[str, Path]:
         """
         Make one circular plot for each group of MOAs.
@@ -284,6 +295,10 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 "These input pathways are not in HALLMARK_GROUPINGS:",
                 sorted(unknown_terms)
             )
+
+        # if targeting specific pathways, filter
+        if target_pathways:
+            pathways = [x for x in pathways if x in target_pathways]
 
         pathway_order, category_spans, pathway_bounds = self.__pathway_layout(pathways)
 
@@ -344,10 +359,17 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
         # Create a fresh Circos object for each mode
         # Top gap leaves an angular opening for category labels.
+        if self.__detailed:
+            start = 0 + self.__top_gap / 2
+            end = 360 - self.__top_gap / 2
+        else:
+            start = 0 + self.__top_gap - 1
+            end = 360 - 1
+
         circos = Circos(
             sectors,
-            start=0 + self.__top_gap / 2,
-            end=360 - self.__top_gap / 2,
+            start=start,
+            end=end,
             space=self.__sector_gap,
             endspace=False,
         )
@@ -418,20 +440,20 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
             # MOA label outside the outer radius
             # give enough space for long MOA names
-            if len(sectors) > 10:
-                moa = moa.replace(' ', '\n')
+            if self.__detailed:
+                if len(sectors) > 10:
+                    moa = moa.replace(' ', '\n')
 
-            sector.text(
-                moa,
-                r=self.__outer_radius + 3 if len(sectors) <= 10 else self.__outer_radius + 1,
-                size=7,
-                orientation="horizontal",
-                adjust_rotation=True,
-                color="black",
-            )
+                sector.text(
+                    moa,
+                    r=self.__outer_radius + 3 if len(sectors) <= 10 else self.__outer_radius + 1,
+                    size=8,
+                    orientation="horizontal",
+                    adjust_rotation=True,
+                    color="black",
+                    )
 
         # Set up the figure
-
         fig = circos.plotfig()
 
         fig.set_size_inches((15, 13))
@@ -445,82 +467,42 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         ])
 
         # Set up pathway labels and categories
-
         label_angle = -self.__top_gap / 2
         theta = np.deg2rad(label_angle)
 
         ax = circos.ax
         fig = ax.figure
 
-        pathway_texts = {}
+        # Pathway labels
+        if self.__detailed:
+            for pathway in pathway_order:
+                r0, r1 = pathway_bounds[pathway]
+                r_mid = (r0 + r1) / 2
 
-        for pathway in pathway_order:
+                pathway_text = f"   {pathway}"
 
-            r0, r1 = pathway_bounds[pathway]
-            r_mid = (r0 + r1) / 2
+                # can only do this since it happens to be last
+                if pathway_text == "   Unfolded Protein Response":
+                    pathway_text = "   Unfolded Protein\n   Response"
+                    r_mid -= 1
 
-            pathway_text = f"   {pathway}"
+                ax.text(
+                    theta,
+                    r_mid,
+                    pathway_text,
+                    ha="left",
+                    va="center",
+                    rotation=-label_angle,
+                    rotation_mode="anchor",
+                    fontsize=5,
+                    clip_on=False,
+                )
 
-            # can only do this since it happens to be last
-            if pathway_text == "   Unfolded Protein Response":
-                pathway_text = "   Unfolded Protein\n   Response"
-                r_mid -= 1
-
-            pathway_texts[pathway] = ax.text(
-                theta,
-                r_mid,
-                pathway_text,
-                ha="left",
-                va="center",
-                rotation=-label_angle,
-                rotation_mode="anchor",
-                fontsize=5,
-                clip_on=False,
-            )
-
-        # Calculate angular endpoints of labels os we know where to put them
         fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
 
-        text_direction = np.array([
-            np.cos(np.deg2rad(-label_angle)),
-            np.sin(np.deg2rad(-label_angle)),
-        ])
-
-        label_end_angles = []
-
-        for pathway, txt in pathway_texts.items():
-
-            r0, r1 = pathway_bounds[pathway]
-            r_mid = (r0 + r1) / 2
-
-            # Actual rendered text width, including leading spaces.
-            text_width, _, _ = renderer.get_text_width_height_descent(
-                txt.get_text(),
-                txt.get_fontproperties(),
-                ismath=False,
-            )
-
-            # Screen position of the pathway label anchor.
-            anchor_px = ax.transData.transform((theta, r_mid))
-
-            # Screen position at the end of the rendered text.
-            endpoint_px = (
-                anchor_px + text_direction * text_width
-            )
-
-            # Convert the endpoint back to polar data coordinates.
-            endpoint_data = ax.transData.inverted().transform(
-                endpoint_px
-            )
-
-            label_end_angles.append(endpoint_data[0])
-
+        # Category labels
         # Furthest angular endpoint of all pathway names.
-        #bracket_theta = max(label_end_angles) + np.deg2rad(1.0)
         bracket_theta = 0
-
-        # Category names sit just beyond the brackets.
         category_theta = bracket_theta + np.deg2rad(1.5)
 
         # Short bracket end caps.
@@ -557,15 +539,23 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 )
 
             # Category name after the bracket.
+            if self.__detailed:
+                category_label = category.replace(' ', '\n')
+            else:
+                category_label = category
+                if category == 'Proliferation (Cell Cycle)':
+                    category_label = 'Proliferation\n(Cell Cycle)'
+                elif category == 'Pathway (Signaling)':
+                    category_label = 'Pathway\n(Signaling)'
+
             ax.text(
                 category_theta,
                 r_mid,
-                category.replace(' ', '\n'),
+                category_label,
                 ha="left",
                 va="center",
-                # rotation=-label_angle,
                 rotation_mode="anchor",
-                fontsize=6,
+                fontsize=6 if self.__detailed else 10,
                 fontweight="bold",
                 clip_on=False,
             )
@@ -602,30 +592,14 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         )
 
         cbar.set_label(
-            'Normalized Enrichment Score (NES)',
-            fontsize=9,
-            labelpad=4,
+            f'Normalized Enrichment Score (NES)\n(Opaque: FDR < {self.fdr_threshold})',
+            fontsize=10 if self.__detailed else 12,
+            labelpad=4 if self.__detailed else 10,
         )
 
         cbar.ax.tick_params(
             labelsize=8,
             pad=1,
-        )
-
-        # Add footnote
-        fig.text(
-            0.50,
-            -0.055,
-            (
-                f"Opaque: FDR < {self.fdr_threshold}  |  "
-                f"Faded: FDR ≥ {self.fdr_threshold}  |  "
-                "Sectors: Mechanism of Action (MOA)  |  "
-                "Radial axis: Biological Pathway Groups  |  "
-                "Angular axis: Cell Lines"
-            ),
-            ha="center",
-            va="bottom",
-            fontsize=7,
         )
 
         # Save results
