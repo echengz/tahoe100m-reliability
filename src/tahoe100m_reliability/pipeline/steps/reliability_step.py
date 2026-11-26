@@ -6,13 +6,16 @@ import csv
 import duckdb
 import json
 import logging
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import shutil
 import tempfile
 import time
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
+from multiprocessing import shared_memory
 from pathlib import Path
 from tqdm import tqdm
 from typing import Any
@@ -178,6 +181,9 @@ def build_expression_matrix(
     parquet_files = []
 
     for cell_line_dir in cell_line_dirs:
+        if not cell_line_dir.is_dir():
+            continue
+
         parquet_files.extend(cell_line_dir.glob("part_*.parquet"))
 
     # should not happen
@@ -267,7 +273,8 @@ def compute_reliability(
     # Remove stim cell line data once done loading it
     if delete_stim_data:
         for cell_line_dir in cell_line_dirs:
-            shutil.rmtree(cell_line_dir)
+            if cell_line_dir.is_dir():
+                shutil.rmtree(cell_line_dir)
 
     if stim_dense is None:
         return None, {}
@@ -333,19 +340,21 @@ class ReliabilityStep(BaseReliabilityStep):
         clusters: str | None = None,
         target_cell_lines_csv: Path | None = None,
         stim_data_dir: Path | None = None,
+        remove_genes: set[str] | None = None,
         cell_line_cooldown: int = 30,
         skip_localization: bool = False,
         **kwargs,
     ) -> None:
         """Initialize reliability step."""
         super().__init__(**kwargs)
-        self.index_treatment_file = indexed_treatments_file
+        self.indexed_treatments_file = indexed_treatments_file
         self.ctrl_gene_expressions_dir = ctrl_gene_expressions_dir
         self.clustered_treatments_csv = clustered_treatments_csv
         self.normalize_cp10k = normalize_cp10k
         self.clusters = [int(x.strip()) for x in clusters.split(',')] if clusters else None
         self.target_cell_lines_csv = target_cell_lines_csv
         self.stim_data_dir = stim_data_dir
+        self.remove_genes = remove_genes
         self.cell_line_cooldown = cell_line_cooldown
         self.skip_localization = skip_localization
 
@@ -418,7 +427,9 @@ class ReliabilityStep(BaseReliabilityStep):
         super().add_cli_args(parser)
 
 
-    def __aggregate_stim_data(self, treatments: list[TreatmentSet], stim_dir: Path):
+    def __aggregate_stim_data(
+        self, treatments: list[TreatmentSet], target_cell_lines: set[str], stim_dir: Path
+    ):
         """Localize and aggregate stim data from the HuggingFace repository."""
         # get all samples for treatments; should be localized to specific parquet files
         # we know a sample maps to a specific drug/dosage so don't need to query that info
@@ -488,7 +499,9 @@ class ReliabilityStep(BaseReliabilityStep):
             max_workers=4
         )
 
-    def __set_up_cell_line_jobs(self, target_cell_lines: set[str]) -> tuple[dict[str, Any], int]:
+    def __set_up_cell_line_jobs(
+        self, treatments: list[TreatmentSet], target_cell_lines: set[str], stim_dir: Path,
+    ) -> tuple[dict[str, Any], int]:
         """Set up the jobs for the given cell lines."""
 
         # Group by cell line so only have to load control once
@@ -546,12 +559,15 @@ class ReliabilityStep(BaseReliabilityStep):
             stim_dir = Path(tmp_dir) if self.stim_data_dir is None else self.stim_data_dir  # can handle this better
 
             if not self.skip_localization:
-                self.aggregate_stim_data(treatments, stim_dir)
+                self.__aggregate_stim_data(treatments, target_cell_lines, stim_dir)
 
             log.info(f"Computing reliability for each cell line against controls for cluster {cluster}")
 
             # get cell line jobs
-            cell_line_jobs, num_jobs_total = self.set_up_cell_line_jobs(target_cell_lines)
+            cell_line_jobs, num_jobs_total = self.__set_up_cell_line_jobs(
+                treatments, target_cell_lines, stim_dir
+            )
+            num_cell_lines = len(cell_line_jobs)
             job_num = 0
 
             for i, (cell_line_id, jobs) in enumerate(cell_line_jobs.items()):
