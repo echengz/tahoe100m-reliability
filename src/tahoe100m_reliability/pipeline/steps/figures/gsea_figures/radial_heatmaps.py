@@ -34,7 +34,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         self.__inner_radius = 27.0
         self.__outer_radius = 94.0
 
-        self.__top_gap = 50 if detailed else 35
+        self.__top_gap = 50 if detailed else 34
         self.__sector_gap = 1
 
     def __ordered_cell_lines(self, df: pd.DataFrame) -> list[str]:
@@ -167,10 +167,11 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         ax = circos.ax
 
         if label_radius is None:
-            if self.__detailed:
-                label_radius = self.__outer_radius + 15
-            else:
-                label_radius = self.__outer_radius + 9
+            label_radius = self.__outer_radius + 20
+            # if self.__detailed:
+            #     label_radius = self.__outer_radius + 15
+            # else:
+            #     label_radius = self.__outer_radius + 9
 
         if linewidth is None:
             if self.__detailed:
@@ -233,7 +234,8 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
             ax.text(
                 mid_angle,
-                label_radius,
+                # this should be based on where it is but just hardcoding for now
+                label_radius if cluster != 2 else label_radius - 5,
                 f'Cluster {cluster}',
                 ha="center",
                 va="center",
@@ -440,18 +442,18 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
             # MOA label outside the outer radius
             # give enough space for long MOA names
-            if self.__detailed:
-                if len(sectors) > 10:
-                    moa = moa.replace(' ', '\n')
+            # if self.__detailed:
+            if len(sectors) > 10:
+                moa = moa.replace(' ', '\n')
 
-                sector.text(
-                    moa,
-                    r=self.__outer_radius + 3 if len(sectors) <= 10 else self.__outer_radius + 1,
-                    size=8,
-                    orientation="horizontal",
-                    adjust_rotation=True,
-                    color="black",
-                    )
+            sector.text(
+                moa,
+                r=self.__outer_radius + 3 if len(sectors) <= 10 else self.__outer_radius + 1,
+                size=10,
+                orientation="horizontal",
+                adjust_rotation=True,
+                color="black",
+                )
 
         # Set up the figure
         fig = circos.plotfig()
@@ -555,7 +557,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
                 ha="left",
                 va="center",
                 rotation_mode="anchor",
-                fontsize=6 if self.__detailed else 10,
+                fontsize=8 if self.__detailed else 10,
                 fontweight="bold",
                 clip_on=False,
             )
@@ -566,7 +568,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
         # set title
         fig.suptitle(
             f"{title} ({mode.upper()})",
-            y=0.95,
+            y=0.98,
             fontsize=13,
             fontweight="bold",
         )
@@ -580,7 +582,7 @@ class GSEARadialHeatmaps(GSEAHeatmaps):
 
         cbar_ax = fig.add_axes([
             (1.0 - cbar_width) / 2,
-            0.002,
+            -0.02,
             cbar_width,
             cbar_height,
         ])
